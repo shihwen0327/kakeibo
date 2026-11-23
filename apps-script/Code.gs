@@ -21,8 +21,20 @@ var EDITABLE = ['categories', 'budgets', 'accounts', 'recurring', 'rules', 'card
 
 /* ===================== 初始化 ===================== */
 
+/* 從試算表「擴充功能」打開的專案直接用那份試算表；
+   在 script.google.com 直接新增的專案，第一次執行 setup 會自動建立一份「Wen 記帳資料」試算表 */
+function ss_() {
+  var a = SpreadsheetApp.getActive();
+  if (a) return a;
+  var props = PropertiesService.getScriptProperties(), id = props.getProperty('SHEET_ID');
+  if (id) return SpreadsheetApp.openById(id);
+  var n = SpreadsheetApp.create('Wen 記帳資料');
+  props.setProperty('SHEET_ID', n.getId());
+  return n;
+}
+
 function setup() {
-  var ss = SpreadsheetApp.getActive();
+  var ss = ss_();
   Object.keys(SHEETS).forEach(function (k) {
     var sh = ss.getSheetByName(SHEET_NAMES[k]) || ss.insertSheet(SHEET_NAMES[k]);
     if (sh.getLastRow() === 0) {
@@ -40,8 +52,9 @@ function setup() {
   setSetting_('apiToken', props.getProperty('TOKEN'));
   if (!settingsMap_().budgetStart) setSetting_('budgetStart', cycleOf_(todayStr_(), 10).start); // 年預算從開始用這個 App 的那一期算
   installTriggers();
-  ['工作表1', 'Sheet1'].forEach(function (n) { var s = ss.getSheetByName(n); if (s && s.getLastRow() === 0) ss.deleteSheet(s); });
+  ['工作表1', 'Sheet1', 'シート1'].forEach(function (n) { var s = ss.getSheetByName(n); if (s && s.getLastRow() === 0) ss.deleteSheet(s); });
   Logger.log('API 金鑰：' + props.getProperty('TOKEN'));
+  Logger.log('資料試算表：' + ss.getUrl());
   return props.getProperty('TOKEN');
 }
 
@@ -404,7 +417,7 @@ function parseAmount_(v) {
 
 /* ===================== 試算表讀寫 ===================== */
 
-function sheet_(k) { return SpreadsheetApp.getActive().getSheetByName(SHEET_NAMES[k]); }
+function sheet_(k) { return ss_().getSheetByName(SHEET_NAMES[k]); }
 
 function readObjects_(k) {
   var sh = sheet_(k), n = sh.getLastRow(), head = SHEETS[k];
