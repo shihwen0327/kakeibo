@@ -87,3 +87,4 @@ table.t th { color: var(--sub); font-weight: 500; }
 svg text { font-family: inherit; }
 
 .tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:8px; background:var(--card2); color:var(--accent, #c07a00); vertical-align:middle; }
+.seg button:disabled { opacity: .35; }

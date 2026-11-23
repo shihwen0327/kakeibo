@@ -1,5 +1,5 @@
 /* 離線快取：App 本體先用快取、背景更新；資料一律走網路（Apps Script） */
-var CACHE = 'wen-kakeibo-v3';
+var CACHE = 'wen-kakeibo-v4';
 var SHELL = ['./', 'index.html', 'style.css', 'lib.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', function (e) {

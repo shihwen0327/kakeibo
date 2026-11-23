@@ -5,10 +5,10 @@
  */
 
 var SHEETS = {
-  tx: ['id', 'date', 'type', 'category', 'group', 'amount', 'currency', 'account', 'member', 'tags', 'note', 'source', 'extId', 'status', 'createdAt', 'updatedAt'],
-  categories: ['name', 'group', 'type', 'emoji', 'order', 'excludeBudget'],
+  tx: ['id', 'date', 'type', 'category', 'group', 'amount', 'currency', 'account', 'member', 'tags', 'note', 'source', 'extId', 'status', 'createdAt', 'updatedAt', 'toAccount', 'toAmount', 'toCurrency'],
+  categories: ['name', 'group', 'type', 'emoji', 'order', 'excludeBudget', 'hidden'],
   budgets: ['category', 'period', 'amount'],
-  accounts: ['name', 'type', 'icon', 'color', 'closeDay', 'payDay', 'payAccount', 'order', 'active'],
+  accounts: ['name', 'type', 'icon', 'color', 'closeDay', 'payDay', 'payAccount', 'order', 'active', 'currency', 'opening', 'openingDate'],
   recurring: ['id', 'name', 'category', 'amount', 'account', 'day', 'active', 'note'],
   rules: ['keyword', 'category', 'account'],
   cards: ['keyword', 'account'],
@@ -46,6 +46,7 @@ function setup() {
   ss.getSheetByName(SHEET_NAMES.tx).getRange('M:M').setNumberFormat('@');
   ss.getSheetByName(SHEET_NAMES.funds).getRange('B:B').setNumberFormat('@');
   ss.getSheetByName(SHEET_NAMES.payslips).getRange('B:C').setNumberFormat('@');
+  ensureHeaders_();
   seedDefaults_();
   var props = PropertiesService.getScriptProperties();
   if (!props.getProperty('TOKEN')) props.setProperty('TOKEN', Utilities.getUuid().replace(/-/g, ''));
@@ -168,6 +169,7 @@ function out_(obj, req) {
 
 var ACTIONS = {
   bootstrap: function () {
+    ensureHeaders_();
     var o = {};
     Object.keys(SHEETS).forEach(function (k) { if (k !== 'settings') o[k] = readObjects_(k); });
     o.settings = settingsMap_();
@@ -248,6 +250,20 @@ var ACTIONS = {
   },
   removePayslip: function (req) { return withLock_(function () { return { removed: deleteRow_('payslips', req.id) }; }); },
   runRecurring: function () { return { created: runRecurring() }; },
+  renameCategory: function (req) {
+    var from = String(req.from || ''), to = String(req.to || '').trim();
+    if (!from || !to || from === to) throw new Error('名稱不能空白');
+    return withLock_(function () {
+      return { tx: renameIn_('tx', ['category'], from, to) + renameIn_('budgets', ['category'], from, to) + renameIn_('recurring', ['category'], from, to) + renameIn_('rules', ['category'], from, to) + renameIn_('categories', ['name'], from, to) };
+    });
+  },
+  renameAccount: function (req) {
+    var from = String(req.from || ''), to = String(req.to || '').trim();
+    if (!from || !to || from === to) throw new Error('名稱不能空白');
+    return withLock_(function () {
+      return { tx: renameIn_('tx', ['account', 'toAccount'], from, to) + renameIn_('recurring', ['account'], from, to) + renameIn_('rules', ['account'], from, to) + renameIn_('cards', ['account'], from, to) + renameIn_('accounts', ['name', 'payAccount'], from, to) };
+    });
+  },
 
   /* 從雲端硬碟裡的試算表（舊記帳 App 匯出的 CSV 轉成的）匯入，用 UUID 判斷不重複 */
   importSheet: function (req) {
@@ -396,7 +412,9 @@ function cardBills_(ctx) {
     var open = all.filter(function (t) { return t.date > fmt_(lastClose); });
     var st = settingsMap_(), key = a.name + '_' + fmt_(due);
     var amt = st['billAmt_' + key] !== undefined && st['billAmt_' + key] !== '' ? Number(st['billAmt_' + key]) : sum_(closed);
-    return { account: a.name, due: fmt_(due), dueAmount: st['billPaid_' + key] === '1' ? 0 : amt, openAmount: sum_(open) };
+    var dueLimit = fmt_(new Date(due.getFullYear(), due.getMonth(), due.getDate() + 7));
+    var paidTx = ctx.tx.some(function (t) { return t.type === '轉' && t.toAccount === a.name && t.date > fmt_(lastClose) && t.date <= dueLimit; });
+    return { account: a.name, due: fmt_(due), dueAmount: (st['billPaid_' + key] === '1' || paidTx) ? 0 : amt, openAmount: sum_(open) };
   });
 }
 
@@ -436,6 +454,26 @@ function parseAmount_(v) {
 /* ===================== 試算表讀寫 ===================== */
 
 function sheet_(k) { return ss_().getSheetByName(SHEET_NAMES[k]); }
+/* 新版多了欄位時，把標題列補齊（舊資料的新欄位是空白） */
+function ensureHeaders_() {
+  Object.keys(SHEETS).forEach(function (k) {
+    var sh = sheet_(k); if (!sh) return;
+    var n = SHEETS[k].length;
+    if (sh.getLastColumn() < n) sh.getRange(1, 1, 1, n).setValues([SHEETS[k]]).setFontWeight('bold');
+  });
+}
+/* 改名：把交易、預算、固定支出、規則等所有用到舊名稱的地方一起改 */
+function renameIn_(k, fields, from, to) {
+  var sh = sheet_(k), n = sh.getLastRow(), head = SHEETS[k], count = 0;
+  if (n <= 1) return 0;
+  fields.forEach(function (f) {
+    var j = head.indexOf(f); if (j < 0) return;
+    var rg = sh.getRange(2, j + 1, n - 1, 1), v = rg.getValues(), changed = false;
+    for (var i = 0; i < v.length; i++) if (String(v[i][0]) === from) { v[i][0] = to; changed = true; count++; }
+    if (changed) rg.setValues(v);
+  });
+  return count;
+}
 
 function readObjects_(k) {
   var sh = sheet_(k), n = sh.getLastRow(), head = SHEETS[k];
@@ -449,11 +487,13 @@ function readObjects_(k) {
       var v = vals[i][j];
       if (v instanceof Date) {
         var hms = Utilities.formatDate(v, 'Asia/Tokyo', 'HH:mm:ss');
-        v = (head[j] === 'date' || head[j] === 'payDate' || hms === '00:00:00') ? fmt_(v) : Utilities.formatDate(v, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ss");
+        v = (head[j] === 'date' || head[j] === 'payDate' || head[j] === 'openingDate' || hms === '00:00:00') ? fmt_(v) : Utilities.formatDate(v, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ss");
       }
       o[head[j]] = v === null ? '' : v;
     }
     if ('amount' in o) o.amount = Number(String(o.amount).replace(/,/g, '')) || 0;
+    if ('toAmount' in o && o.toAmount !== '') o.toAmount = Number(String(o.toAmount).replace(/,/g, '')) || 0;
+    if ('openingDate' in o) o.openingDate = String(o.openingDate).slice(0, 10);
     if ('active' in o) o.active = String(o.active).toUpperCase() === 'TRUE' ? 'TRUE' : '';
     out.push(o);
   }
