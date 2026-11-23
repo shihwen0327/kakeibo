@@ -88,3 +88,28 @@ svg text { font-family: inherit; }
 
 .tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:8px; background:var(--card2); color:var(--accent, #c07a00); vertical-align:middle; }
 .seg button:disabled { opacity: .35; }
+/* 月曆 */
+.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-top: 6px; }
+.cal-h { text-align: center; font-size: 12px; color: var(--sub); padding: 4px 0; }
+.cal-d { background: var(--card); border-radius: 8px; min-height: 56px; padding: 4px 3px; display: flex; flex-direction: column; align-items: center; font-size: 10px; line-height: 1.25; overflow: hidden; }
+.cal-d b { font-size: 13px; font-weight: 600; }
+.cal-d.today b { color: var(--accent); }
+.cal-d.on { outline: 2px solid var(--accent); }
+/* 收據 */
+.btn-file { display: block; text-align: center; background: var(--card2); border-radius: 12px; padding: 10px; color: var(--blue); }
+.viewer { position: fixed; inset: 0; background: rgba(0,0,0,.92); z-index: 300; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; }
+.viewer img { max-width: 100%; max-height: 85vh; border-radius: 8px; }
+/* 隱私鎖 */
+.lock { position: fixed; inset: 0; background: var(--bg); z-index: 400; display: flex; align-items: center; justify-content: center; }
+.lock-box { width: 260px; text-align: center; }
+/* 淺色主題 */
+html[data-mode=light] { --bg: #f2f2f7; --card: #fff; --card2: #e9e9ef; --line: #d1d1d6; --text: #111; --sub: #6e6e73; }
+html[data-mode=light] .seg button.on { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+html[data-mode=light] button.danger { background: #fde8e8; }
+html[data-mode=light] .pill.red { background: #fde8e8; } html[data-mode=light] .pill.amber { background: #fff1d6; }
+html[data-mode=light] nav.tabs { background: rgba(255,255,255,.94); }
+html[data-mode=light] .sheet { background: #f2f2f7; }
+html[data-mode=light] .toast { background: #333; color: #fff; }
+html[data-mode=light] .alert { background: #fff1d6; color: #8a5a00; } html[data-mode=light] .alert.red { background: #fde8e8; color: #b3261e; }
+html[data-mode=light] .info { background: #e3f0ff; color: #0b4a8f; }
+nav.tabs button.add b { background: var(--accent); }

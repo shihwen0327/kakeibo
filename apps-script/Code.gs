@@ -5,25 +5,30 @@
  */
 
 var SHEETS = {
-  tx: ['id', 'date', 'type', 'category', 'group', 'amount', 'currency', 'account', 'member', 'tags', 'note', 'source', 'extId', 'status', 'createdAt', 'updatedAt', 'toAccount', 'toAmount', 'toCurrency'],
+  tx: ['id', 'date', 'type', 'category', 'group', 'amount', 'currency', 'account', 'member', 'tags', 'note', 'source', 'extId', 'status', 'createdAt', 'updatedAt', 'toAccount', 'toAmount', 'toCurrency', 'installments', 'receipt'],
   categories: ['name', 'group', 'type', 'emoji', 'order', 'excludeBudget', 'hidden'],
   budgets: ['category', 'period', 'amount'],
-  accounts: ['name', 'type', 'icon', 'color', 'closeDay', 'payDay', 'payAccount', 'order', 'active', 'currency', 'opening', 'openingDate'],
-  recurring: ['id', 'name', 'category', 'amount', 'account', 'day', 'active', 'note'],
+  accounts: ['name', 'type', 'icon', 'color', 'closeDay', 'payDay', 'payAccount', 'order', 'active', 'currency', 'opening', 'openingDate', 'autopay', 'rate', 'payment', 'principal'],
+  recurring: ['id', 'name', 'category', 'amount', 'account', 'day', 'active', 'note', 'type', 'freq', 'month', 'toAccount'],
   rules: ['keyword', 'category', 'account'],
   cards: ['keyword', 'account'],
   funds: ['id', 'date', 'fund', 'amount', 'note'],
   payslips: ['id', 'month', 'payDate', 'gross', 'deduction', 'net', 'items', 'createdAt'],
-  settings: ['key', 'value']
+  settings: ['key', 'value'],
+  trades: ['id', 'date', 'account', 'symbol', 'name', 'market', 'side', 'qty', 'price', 'fee', 'currency', 'settle', 'note', 'createdAt'],
+  prices: ['symbol', 'gf', 'price', 'currency', 'manual', 'updatedAt', 'live']
 };
-var SHEET_NAMES = { tx: 'Transactions', categories: 'Categories', budgets: 'Budgets', accounts: 'Accounts', recurring: 'Recurring', rules: 'Rules', cards: 'Cards', funds: 'Funds', payslips: 'Payslips', settings: 'Settings' };
+var SHEET_NAMES = { tx: 'Transactions', categories: 'Categories', budgets: 'Budgets', accounts: 'Accounts', recurring: 'Recurring', rules: 'Rules', cards: 'Cards', funds: 'Funds', payslips: 'Payslips', settings: 'Settings', trades: 'Trades', prices: 'Prices' };
 var EDITABLE = ['categories', 'budgets', 'accounts', 'recurring', 'rules', 'cards'];
+var OWNER_ONLY = ['listBooks', 'createBook', 'renameBook', 'removeBook', 'shareBook', 'importSheet', 'ocr', 'savePayslip', 'removePayslip'];
 
 /* ===================== 初始化 ===================== */
 
 /* 從試算表「擴充功能」打開的專案直接用那份試算表；
    在 script.google.com 直接新增的專案，第一次執行 setup 會自動建立一份「Wen 記帳資料」試算表 */
+var CUR_BOOK = null, CUR_SS = null;
 function ss_() {
+  if (CUR_BOOK) return CUR_SS || (CUR_SS = SpreadsheetApp.openById(CUR_BOOK.sheetId));
   var a = SpreadsheetApp.getActive();
   if (a) return a;
   var props = PropertiesService.getScriptProperties(), id = props.getProperty('SHEET_ID');
@@ -35,6 +40,19 @@ function ss_() {
 
 function setup() {
   var ss = ss_();
+  setupSheets_(ss);
+  seedDefaults_();
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('TOKEN')) props.setProperty('TOKEN', Utilities.getUuid().replace(/-/g, ''));
+  setSetting_('apiToken', props.getProperty('TOKEN'));
+  if (!settingsMap_().budgetStart) setSetting_('budgetStart', cycleOf_(todayStr_(), 10).start); // 年預算從開始用這個 App 的那一期算
+  installTriggers();
+  Logger.log('API 金鑰：' + props.getProperty('TOKEN'));
+  Logger.log('資料試算表：' + ss.getUrl());
+  return props.getProperty('TOKEN');
+}
+/* 建立所有分頁與標題（新帳本也用這個） */
+function setupSheets_(ss) {
   Object.keys(SHEETS).forEach(function (k) {
     var sh = ss.getSheetByName(SHEET_NAMES[k]) || ss.insertSheet(SHEET_NAMES[k]);
     if (sh.getLastRow() === 0) {
@@ -46,17 +64,9 @@ function setup() {
   ss.getSheetByName(SHEET_NAMES.tx).getRange('M:M').setNumberFormat('@');
   ss.getSheetByName(SHEET_NAMES.funds).getRange('B:B').setNumberFormat('@');
   ss.getSheetByName(SHEET_NAMES.payslips).getRange('B:C').setNumberFormat('@');
+  ss.getSheetByName(SHEET_NAMES.trades).getRange('B:B').setNumberFormat('@');
   ensureHeaders_();
-  seedDefaults_();
-  var props = PropertiesService.getScriptProperties();
-  if (!props.getProperty('TOKEN')) props.setProperty('TOKEN', Utilities.getUuid().replace(/-/g, ''));
-  setSetting_('apiToken', props.getProperty('TOKEN'));
-  if (!settingsMap_().budgetStart) setSetting_('budgetStart', cycleOf_(todayStr_(), 10).start); // 年預算從開始用這個 App 的那一期算
-  installTriggers();
-  ['工作表1', 'Sheet1', 'シート1'].forEach(function (n) { var s = ss.getSheetByName(n); if (s && s.getLastRow() === 0) ss.deleteSheet(s); });
-  Logger.log('API 金鑰：' + props.getProperty('TOKEN'));
-  Logger.log('資料試算表：' + ss.getUrl());
-  return props.getProperty('TOKEN');
+  ['工作表1', 'Sheet1', 'シート1'].forEach(function (n) { var s = ss.getSheetByName(n); if (s && s.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s); });
 }
 
 function installTriggers() {
@@ -148,8 +158,17 @@ function doPost(e) {
 
 function handle_(req) {
   try {
-    var token = PropertiesService.getScriptProperties().getProperty('TOKEN');
-    if (!token || String(req.token) !== token) return out_({ ok: false, error: 'API 金鑰錯誤' }, req);
+    var token = PropertiesService.getScriptProperties().getProperty('TOKEN'), tk = String(req.token || '');
+    var books = books_(), book = null;
+    if (token && tk === token) {
+      if (req.book && req.book !== 'main') { book = books.filter(function (b) { return b.id === req.book; })[0]; if (!book) return out_({ ok: false, error: '找不到這個帳本' }, req); }
+      req._owner = true;
+    } else {
+      book = books.filter(function (b) { return b.token && b.token === tk; })[0];
+      if (!book) return out_({ ok: false, error: 'API 金鑰錯誤' }, req);
+      if (OWNER_ONLY.indexOf(req.action) >= 0) return out_({ ok: false, error: '共享帳本不能使用這個功能' }, req);
+    }
+    CUR_BOOK = book; CUR_SS = null;
     var fn = ACTIONS[req.action];
     if (!fn) return out_({ ok: false, error: '未知的動作：' + req.action }, req);
     var res = fn(req) || {};
@@ -168,12 +187,14 @@ function out_(obj, req) {
 }
 
 var ACTIONS = {
-  bootstrap: function () {
+  bootstrap: function (req) {
     ensureHeaders_();
     var o = {};
     Object.keys(SHEETS).forEach(function (k) { if (k !== 'settings') o[k] = readObjects_(k); });
     o.settings = settingsMap_();
     o.serverTime = nowIso_();
+    o.book = CUR_BOOK ? { id: CUR_BOOK.id, name: CUR_BOOK.name, url: 'https://docs.google.com/spreadsheets/d/' + CUR_BOOK.sheetId } : { id: 'main', name: '我的帳本', url: ss_().getUrl() };
+    if (req && req._owner) o.books = [{ id: 'main', name: '我的帳本' }].concat(books_().map(function (b) { return { id: b.id, name: b.name, token: b.token, shared: b.shared || [] }; }));
     return o;
   },
   add: function (req) {
@@ -223,7 +244,7 @@ var ACTIONS = {
     return { _text: txMessage_(tx) };
   },
   categoryList: function () {
-    var names = readObjects_('categories').filter(function (c) { return c.type === '支' && c.group !== '旅遊' && c.name !== '水電瓦斯' && c.name !== '待分類'; })
+    var names = readObjects_('categories').filter(function (c) { return c.type === '支' && c.group !== '旅遊' && c.name !== '水電瓦斯' && c.name !== '待分類' && String(c.hidden).toUpperCase() !== 'TRUE'; })
       .sort(function (a, b) { return Number(a.order) - Number(b.order); }).map(function (c) { return c.name; });
     return { _text: names.join('\n') };
   },
@@ -249,7 +270,70 @@ var ACTIONS = {
     return { payslip: p };
   },
   removePayslip: function (req) { return withLock_(function () { return { removed: deleteRow_('payslips', req.id) }; }); },
-  runRecurring: function () { return { created: runRecurring() }; },
+  runRecurring: function () { return { created: runRecurringBook_() }; },
+  /* ---------- 多帳本 ---------- */
+  listBooks: function () { return { books: books_().map(function (b) { return { id: b.id, name: b.name, token: b.token, shared: b.shared || [] }; }) }; },
+  createBook: function (req) {
+    var name = String(req.name || '').trim(); if (!name) throw new Error('請輸入帳本名稱');
+    var cats = readObjects_('categories'), accs = readObjects_('accounts'), st = settingsMap_();
+    var ss = SpreadsheetApp.create('Wen 記帳 - ' + name);
+    var b = { id: 'b' + Date.now().toString(36), name: name, sheetId: ss.getId(), token: Utilities.getUuid().replace(/-/g, ''), shared: [] };
+    CUR_BOOK = b; CUR_SS = ss;
+    setupSheets_(ss);
+    writeObjects_('categories', cats);
+    writeObjects_('accounts', accs.map(function (a) { a.opening = ''; a.openingDate = ''; return a; }));
+    [['cycleStartDay', st.cycleStartDay || 10], ['alertPercent', st.alertPercent || 80], ['members', req.members || '自己'], ['budgetStart', todayStr_()]].forEach(function (r) { setSetting_(r[0], r[1]); });
+    var list = books_(); list.push(b); saveBooks_(list);
+    return { book: { id: b.id, name: b.name, token: b.token, shared: [] } };
+  },
+  renameBook: function (req) {
+    var list = books_(), b = list.filter(function (x) { return x.id === req.id; })[0]; if (!b) throw new Error('找不到帳本');
+    b.name = String(req.name || b.name).trim(); saveBooks_(list);
+    try { SpreadsheetApp.openById(b.sheetId).rename('Wen 記帳 - ' + b.name); } catch (e) {}
+    return { id: b.id, name: b.name };
+  },
+  removeBook: function (req) { saveBooks_(books_().filter(function (x) { return x.id !== req.id; })); return { removed: req.id }; },
+  shareBook: function (req) {
+    var list = books_(), b = list.filter(function (x) { return x.id === req.id; })[0]; if (!b) throw new Error('找不到帳本');
+    if (req.newToken) b.token = Utilities.getUuid().replace(/-/g, '');
+    var email = String(req.email || '').trim();
+    if (email) { DriveApp.getFileById(b.sheetId).addEditor(email); b.shared = (b.shared || []).filter(function (x) { return x !== email; }).concat([email]); }
+    saveBooks_(list);
+    return { id: b.id, name: b.name, token: b.token, shared: b.shared || [] };
+  },
+  /* ---------- 投資 ---------- */
+  saveTrade: function (req) {
+    var t = req.trade; t.id = t.id || Utilities.getUuid(); t.createdAt = t.createdAt || nowIso_();
+    withLock_(function () { deleteRow_('trades', t.id); appendObjects_('trades', [t]); ensurePrice_(t); });
+    return { trade: t };
+  },
+  removeTrade: function (req) { return withLock_(function () { return { removed: deleteRow_('trades', req.id) }; }); },
+  setPrice: function (req) {
+    return withLock_(function () {
+      var rows = readObjects_('prices'), r = rows.filter(function (x) { return x.symbol === req.symbol; })[0];
+      if (!r) { r = { symbol: req.symbol, gf: '', currency: req.currency || 'JPY' }; rows.push(r); }
+      r.price = Number(req.price); r.manual = req.manual === false ? '' : 'TRUE'; r.updatedAt = nowIso_();
+      writePrices_(rows); return { price: r };
+    });
+  },
+  refreshPrices: function () { return { prices: refreshPrices_() }; },
+  /* ---------- 收據 ---------- */
+  uploadReceipt: function (req) {
+    var folder = receiptFolder_();
+    var blob = Utilities.newBlob(Utilities.base64Decode(req.base64), req.mimeType || 'image/jpeg', (req.txId || 'receipt') + '.jpg');
+    var f = folder.createFile(blob);
+    if (req.txId) withLock_(function () { updateRow_('tx', { id: req.txId, receipt: f.getId() }); });
+    return { fileId: f.getId() };
+  },
+  getReceipt: function (req) {
+    var f = DriveApp.getFileById(req.fileId);
+    return { base64: Utilities.base64Encode(f.getBlob().getBytes()), mimeType: f.getMimeType() };
+  },
+  removeReceipt: function (req) {
+    try { DriveApp.getFileById(req.fileId).setTrashed(true); } catch (e) {}
+    if (req.txId) withLock_(function () { updateRow_('tx', { id: req.txId, receipt: '' }); });
+    return { removed: true };
+  },
   renameCategory: function (req) {
     var from = String(req.from || ''), to = String(req.to || '').trim();
     if (!from || !to || from === to) throw new Error('名稱不能空白');
@@ -286,20 +370,142 @@ var ACTIONS = {
 
 /* ===================== 固定支出（每天 6 點跑） ===================== */
 
+/* 每天早上 6 點：每個帳本的固定收支、信用卡自動扣款，然後更新股價匯率 */
 function runRecurring() {
-  var today = todayStr_(), p = today.split('-').map(Number);
+  var n = 0;
+  [null].concat(books_()).forEach(function (b) {
+    CUR_BOOK = b; CUR_SS = null;
+    try { n += runRecurringBook_(); } catch (e) { Logger.log((b ? b.name : 'main') + ': ' + e); }
+    try { refreshPrices_(); } catch (e) { Logger.log('prices ' + e); }
+  });
+  CUR_BOOK = null; CUR_SS = null;
+  return n;
+}
+function runRecurringBook_() {
+  var today = todayStr_(), p = today.split('-').map(Number), td = new Date(p[0], p[1] - 1, p[2]);
   var last = new Date(p[0], p[1], 0).getDate();
   var list = readObjects_('recurring').filter(function (r) { return String(r.active).toUpperCase() === 'TRUE' && Number(r.amount); });
+  var allTx = readObjects_('tx'), accs = readObjects_('accounts'), accMap = {};
+  accs.forEach(function (a) { accMap[a.name] = a; });
   var txs = [], ym = today.slice(0, 7);
   /* 這個月已經手動記過同類別、同金額的就不重複記 */
   var seen = {};
-  readObjects_('tx').forEach(function (t) { if (String(t.date).slice(0, 7) === ym) seen[t.category + '|' + Number(t.amount)] = true; });
+  allTx.forEach(function (t) { if (String(t.date).slice(0, 7) === ym) seen[(t.type || '支') + '|' + t.category + '|' + Number(t.amount)] = true; });
   list.forEach(function (r) {
-    var day = Math.min(Number(r.day) || 1, last);
-    if (p[2] < day || seen[r.category + '|' + Number(r.amount)]) return;
-    txs.push({ id: 'rec-' + r.id + '-' + ym, date: ym + '-' + ('0' + day).slice(-2), type: '支', category: r.category, amount: Number(r.amount), currency: 'JPY', account: r.account, member: '自己', note: r.note || r.name, source: 'recurring', status: 'ok' });
+    var type = r.type || '支', freq = r.freq || 'month', date, key;
+    if (freq === 'week') {
+      var wd = Number(r.day) % 7, d = new Date(td.getTime() - ((td.getDay() - wd + 7) % 7) * 86400000);
+      date = fmt_(d); key = date;
+    } else if (freq === 'year') {
+      var mo = Number(r.month) || 1, dd = Math.min(Number(r.day) || 1, new Date(p[0], mo, 0).getDate());
+      date = p[0] + '-' + ('0' + mo).slice(-2) + '-' + ('0' + dd).slice(-2); key = String(p[0]);
+      if (date > today) return;
+    } else {
+      var day = Math.min(Number(r.day) || 1, last);
+      if (p[2] < day) return;
+      date = ym + '-' + ('0' + day).slice(-2); key = ym;
+      if (type === '支' && seen['支|' + r.category + '|' + Number(r.amount)]) return;
+      if (type === '轉' && allTx.some(function (t) { return t.type === '轉' && t.toAccount === r.toAccount && String(t.date).slice(0, 7) === ym && String(t.id).indexOf('rec-' + r.id) !== 0; })) return;
+    }
+    var id = 'rec-' + r.id + '-' + key, acc = accMap[r.account] || {};
+    var cur = acc.currency || (acc.type === 'foreign' ? 'TWD' : 'JPY');
+    if (type === '轉') {
+      var to = accMap[r.toAccount] || {}, amt = Number(r.amount);
+      /* 貸款：每月還款拆成本金（轉帳）＋利息（支出） */
+      if (to.type === 'loan' && Number(to.rate)) {
+        var bal = accBalance_(to, allTx.concat(txs));
+        var interest = bal === null ? 0 : Math.round(Math.abs(Math.min(0, bal)) * Number(to.rate) / 100 / 12);
+        if (interest) { txs.push({ id: id + '-int', date: date, type: '支', category: '貸款利息', amount: interest, currency: cur, account: r.account, member: '自己', note: r.toAccount + ' 利息', source: 'recurring', status: 'ok' }); amt -= interest; }
+      }
+      txs.push({ id: id, date: date, type: '轉', category: '轉帳', amount: amt, currency: cur, account: r.account, toAccount: r.toAccount, toAmount: amt, toCurrency: to.currency || cur, member: '自己', note: r.note || r.name, source: 'recurring', status: 'ok' });
+    } else {
+      txs.push({ id: id, date: date, type: type, category: r.category, amount: Number(r.amount), currency: cur, account: r.account, member: '自己', note: r.note || r.name, source: 'recurring', status: 'ok' });
+    }
   });
+  /* 信用卡自動扣款：繳款日當天（或之後 7 天內）還沒繳就從扣款帳戶轉帳 */
+  var ctx = { tx: allTx, accounts: accs };
+  cardBills_(ctx).forEach(function (b) {
+    var a = accMap[b.account];
+    if (String(a.autopay).toUpperCase() !== 'TRUE' || !a.payAccount || !b.dueAmount) return;
+    if (today < b.due || dayDiff_(today, b.due) > 7) return;
+    var pc = accMap[a.payAccount] || {};
+    txs.push({ id: 'autopay-' + a.name + '-' + b.due, date: b.due, type: '轉', category: '轉帳', amount: b.dueAmount, currency: 'JPY', account: a.payAccount, toAccount: a.name, toAmount: b.dueAmount, toCurrency: pc.currency || 'JPY', member: '自己', note: a.name + ' 自動扣款', source: 'autopay', status: 'ok' });
+  });
+  if (txs.some(function (t) { return t.category === '貸款利息'; }) && !readObjects_('categories').some(function (c) { return c.name === '貸款利息'; }))
+    appendObjects_('categories', [{ name: '貸款利息', group: '其他', type: '支', emoji: '🏦', order: 999, excludeBudget: 'TRUE', hidden: '' }]);
   return withLock_(function () { return appendTx_(txs); });
+}
+function accBalance_(a, txs) {
+  if (a.opening === '' || a.opening == null || !a.openingDate) return null;
+  var od = String(a.openingDate).slice(0, 10), bal = Number(a.opening) || 0;
+  txs.forEach(function (t) {
+    if (t.date <= od) return;
+    if (t.type === '轉') {
+      if (t.account === a.name) bal -= Number(t.amount) || 0;
+      if (t.toAccount === a.name) bal += Number(t.toAmount !== '' && t.toAmount != null ? t.toAmount : t.amount) || 0;
+    } else if (t.account === a.name) bal += (t.type === '收' ? 1 : -1) * (Number(t.amount) || 0);
+  });
+  return bal;
+}
+
+/* 在編輯器執行一次：授權雲端硬碟（收據、共享帳本）並建立股價匯率分頁 */
+function authorize() {
+  receiptFolder_();
+  ensureHeaders_();
+  Logger.log(JSON.stringify(refreshPrices_()));
+}
+
+/* ===================== 多帳本 ===================== */
+function books_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('BOOKS') || '[]'); } catch (e) { return []; } }
+function saveBooks_(list) { PropertiesService.getScriptProperties().setProperty('BOOKS', JSON.stringify(list)); }
+
+/* ===================== 股價、匯率（GOOGLEFINANCE） ===================== */
+function gfCode_(market, symbol) {
+  symbol = String(symbol).trim().toUpperCase();
+  if (market === 'US') return symbol;
+  if (market === 'JP') return 'TYO:' + symbol;
+  if (market === 'TW') return 'TPE:' + symbol;
+  return '';
+}
+function ensurePrice_(t) {
+  var rows = readObjects_('prices');
+  if (rows.some(function (r) { return r.symbol === t.symbol; })) return;
+  var gf = gfCode_(t.market, t.symbol);
+  rows.push({ symbol: t.symbol, gf: gf, price: '', currency: t.currency, manual: gf ? '' : 'TRUE', updatedAt: '' });
+  writePrices_(rows);
+}
+function writePrices_(rows) {
+  writeObjects_('prices', rows.map(function (r) {
+    var o = Object.assign({}, r);
+    o.live = r.gf && String(r.manual).toUpperCase() !== 'TRUE' ? '=GOOGLEFINANCE("' + r.gf + '","price")' : '';
+    return o;
+  }));
+}
+function refreshPrices_() {
+  var rows = readObjects_('prices');
+  var curs = {};
+  readObjects_('accounts').forEach(function (a) { var c = a.currency || (a.type === 'foreign' ? 'TWD' : 'JPY'); if (c !== 'JPY') curs[c] = 1; });
+  rows.forEach(function (r) { if (r.currency && r.currency !== 'JPY') curs[r.currency] = 1; });
+  Object.keys(curs).forEach(function (c) { if (!rows.some(function (r) { return r.symbol === 'FX:' + c; })) rows.push({ symbol: 'FX:' + c, gf: 'CURRENCY:' + c + 'JPY', price: '', currency: 'JPY', manual: '', updatedAt: '' }); });
+  if (!rows.length) return [];
+  writePrices_(rows);
+  SpreadsheetApp.flush();
+  Utilities.sleep(4000);
+  var fresh = readObjects_('prices');
+  fresh.forEach(function (r) { var v = Number(r.live); if (r.live !== '' && !isNaN(v) && v > 0) { r.price = v; r.updatedAt = nowIso_(); } });
+  writePrices_(fresh);
+  var fx = fresh.filter(function (r) { return r.symbol === 'FX:TWD'; })[0];
+  if (fx && Number(fx.price)) setSetting_('twdRate', Math.round(Number(fx.price) * 1000) / 1000);
+  return fresh;
+}
+
+/* ===================== 收據 ===================== */
+function receiptFolder_() {
+  var props = PropertiesService.getScriptProperties(), id = props.getProperty('RECEIPT_FOLDER');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
+  var f = DriveApp.createFolder('Wen 記帳收據');
+  props.setProperty('RECEIPT_FOLDER', f.getId());
+  return f;
 }
 
 /* ===================== 通知文字 ===================== */
@@ -408,8 +614,9 @@ function cardBills_(ctx) {
     var prevClose = new Date(lastClose.getFullYear(), lastClose.getMonth() - 1, close);
     var due = new Date(lastClose.getFullYear(), lastClose.getMonth() + 1, pay);
     var all = ctx.tx.filter(function (t) { return t.account === a.name && t.type === '支'; });
-    var closed = all.filter(function (t) { return t.date > fmt_(prevClose) && t.date <= fmt_(lastClose); });
-    var open = all.filter(function (t) { return t.date > fmt_(lastClose); });
+    var nextClose = new Date(lastClose.getFullYear(), lastClose.getMonth() + 1, close);
+    var closed = installParts_(all, fmt_(prevClose), fmt_(lastClose));
+    var open = installParts_(all, fmt_(lastClose), fmt_(nextClose));
     var st = settingsMap_(), key = a.name + '_' + fmt_(due);
     var amt = st['billAmt_' + key] !== undefined && st['billAmt_' + key] !== '' ? Number(st['billAmt_' + key]) : sum_(closed);
     var dueLimit = fmt_(new Date(due.getFullYear(), due.getMonth(), due.getDate() + 7));
@@ -428,6 +635,20 @@ function cycleOf_(dateStr, startDay) {
 function dayDiff_(a, b) {
   var x = a.split('-').map(Number), y = b.split('-').map(Number);
   return Math.round((new Date(x[0], x[1] - 1, x[2]) - new Date(y[0], y[1] - 1, y[2])) / 86400000);
+}
+/* 分期：第 k 期算在刷卡日加 k 個月的那一期，零頭放第一期 */
+function installParts_(list, from, to) {
+  var out = [];
+  list.forEach(function (t) {
+    var n = Math.max(1, Number(t.installments) || 1), amt = Number(t.amount);
+    if (n === 1) { if (t.date > from && t.date <= to) out.push(t); return; }
+    var part = Math.floor(amt / n), p = String(t.date).split('-').map(Number);
+    for (var k = 0; k < n; k++) {
+      var d = new Date(p[0], p[1] - 1 + k, Math.min(p[2], new Date(p[0], p[1] + k, 0).getDate())), ds = fmt_(d);
+      if (ds > from && ds <= to) out.push({ amount: k === 0 ? amt - part * (n - 1) : part });
+    }
+  });
+  return out;
 }
 function sum_(list) { return list.reduce(function (s, t) { return s + Number(t.amount); }, 0); }
 function fmtN_(n) { return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
@@ -457,7 +678,8 @@ function sheet_(k) { return ss_().getSheetByName(SHEET_NAMES[k]); }
 /* 新版多了欄位時，把標題列補齊（舊資料的新欄位是空白） */
 function ensureHeaders_() {
   Object.keys(SHEETS).forEach(function (k) {
-    var sh = sheet_(k); if (!sh) return;
+    var sh = sheet_(k);
+    if (!sh) { sh = ss_().insertSheet(SHEET_NAMES[k]); sh.setFrozenRows(1); if (k === 'trades') sh.getRange('B:B').setNumberFormat('@'); }
     var n = SHEETS[k].length;
     if (sh.getLastColumn() < n) sh.getRange(1, 1, 1, n).setValues([SHEETS[k]]).setFontWeight('bold');
   });
