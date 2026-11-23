@@ -247,7 +247,25 @@ var ACTIONS = {
     return { payslip: p };
   },
   removePayslip: function (req) { return withLock_(function () { return { removed: deleteRow_('payslips', req.id) }; }); },
-  runRecurring: function () { return { created: runRecurring() }; }
+  runRecurring: function () { return { created: runRecurring() }; },
+
+  /* 從雲端硬碟裡的試算表（舊記帳 App 匯出的 CSV 轉成的）匯入，用 UUID 判斷不重複 */
+  importSheet: function (req) {
+    var vals = SpreadsheetApp.openById(req.fileId).getSheets()[0].getDataRange().getValues();
+    var head = vals[0].map(function (h) { return String(h).replace(/^\uFEFF/, '').trim(); });
+    var col = function (n) { return head.indexOf(n); };
+    var c = { date: col('日期'), cat: col('類別'), grp: col('大類別'), amt: col('金額'), cur: col('貨幣'), mem: col('成員'), acc: col('帳戶'), tag: col('標籤'), note: col('備註'), io: col('收支區分'), id: col('UUID') };
+    var txs = [];
+    for (var i = 1; i < vals.length; i++) {
+      var r = vals[i], d = r[c.date];
+      d = d instanceof Date ? fmt_(d) : String(d).replace(/^(\d{4})(\d{2})(\d{2}).*/, '$1-$2-$3');
+      var amount = Number(String(r[c.amt]).replace(/,/g, ''));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !amount) continue;
+      txs.push({ id: String(r[c.id] || ('legacy-' + d + '-' + i)), date: d, type: r[c.io] === '收' ? '收' : '支', category: String(r[c.cat] || '待分類'), group: String(r[c.grp] || ''),
+        amount: amount, currency: String(r[c.cur] || 'JPY'), account: String(r[c.acc] || ''), member: String(r[c.mem] || '自己'), tags: String(r[c.tag] || ''), note: String(r[c.note] || ''), source: 'import', status: 'ok' });
+    }
+    return { rows: txs.length, added: withLock_(function () { return appendTx_(txs); }) };
+  }
 };
 
 /* ===================== 固定支出（每天 6 點跑） ===================== */
