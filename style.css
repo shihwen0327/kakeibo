@@ -85,3 +85,5 @@ table.t th { color: var(--sub); font-weight: 500; }
 .empty { text-align: center; color: var(--sub); padding: 24px 0; }
 .edit-row { display: grid; grid-template-columns: 1fr 110px; gap: 8px; align-items: center; margin: 6px 0; }
 svg text { font-family: inherit; }
+
+.tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:8px; background:var(--card2); color:var(--accent, #c07a00); vertical-align:middle; }

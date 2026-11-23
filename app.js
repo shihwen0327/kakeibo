@@ -406,32 +406,63 @@
 
   /* ---------- 薪資明細 ---------- */
   PAGES.payslip = function () {
-    var list = D().payslips.slice().sort(function (a, b) { return a.month < b.month ? 1 : -1; });
+    var list = slips().sort(function (a, b) { return (a.payDate || a.month) < (b.payDate || b.month) ? 1 : -1; });
+    var gs = D().payslips.filter(isGensen).sort(function (a, b) { return a.month < b.month ? 1 : -1; });
     var h = back('薪資明細') + '<div class="card"><h3>上傳薪資單 PDF</h3><div class="sub">會自動讀出各項支給、社保、稅金和實領金額，確認後存檔。</div>' +
       '<input type="file" accept="application/pdf,image/*" data-act="payslipFile" style="margin-top:10px"></div><div id="psPreview"></div>';
     h += '<h2>已存的明細</h2><div class="card list">' + (list.length ? list.map(function (p) {
-      return '<div class="row between" data-act="psView:' + p.id + '"><span>' + p.month + ' 支払分</span><span class="num">實領 ' + yen(p.net) + ' ›</span></div>';
+      var it = psItems(p);
+      return '<div class="row between" data-act="psView:' + p.id + '"><span>' + esc(psLabel(p)) + (isBonus(p) ? ' <span class="tag">賞与</span>' : '') + '<br><span class="sub">' + esc((it.company || '').replace(/（.*）/, '') + (p.payDate ? '　' + p.payDate + ' 入帳' : '')) + '</span></span><span class="num">實領 ' + yen(p.net) + ' ›</span></div>';
     }).join('') : '<div class="empty">還沒有</div>') + '</div>';
+    if (gs.length) h += '<h2>源泉徴収票</h2><div class="card list">' + gs.map(function (g) {
+      var it = psItems(g);
+      return '<div class="row between" data-act="psView:' + g.id + '"><span>' + esc(it.year || g.month) + ' 年<br><span class="sub">' + esc(it.company || '') + '</span></span><span class="num">支払金額 ' + yen(g.gross) + ' ›</span></div>';
+    }).join('') + '</div>';
     return h;
   };
+  function isGensen(p) { return /^gensen-/.test(p.id); }
+  function slips() { return D().payslips.filter(function (p) { return !isGensen(p); }); }
+  function isBonus(p) { return psItems(p).kind === '賞与' || /bonus/.test(p.id); }
+  function psLabel(p) { var it = psItems(p); return it.title || (p.month + ' 支払分'); }
   function psItems(p) { try { return typeof p.items === 'string' ? JSON.parse(p.items || '{}') : (p.items || {}); } catch (e) { return {}; } }
 
   PAGES.salary = function () {
-    var list = D().payslips.slice().sort(function (a, b) { return a.month < b.month ? -1 : 1; });
+    var list = slips().sort(function (a, b) { return (a.payDate || a.month) < (b.payDate || b.month) ? -1 : 1; });
+    var regular = list.filter(function (p) { return !isBonus(p); });
     var h = back('薪資與扣款分析');
     if (!list.length) return h + '<div class="empty">先到「薪資明細」上傳薪資單</div>';
-    var series = list.slice(-12).map(function (p) { return { label: p.month.slice(2).replace('-', '/'), inc: Number(p.gross), out: Number(p.net) }; });
-    h += '<div class="card"><h3>每月總支給與實領</h3>' + barsChart(series) + '<div class="sub">灰：總支給　綠：實領</div></div>';
+    var series = regular.slice(-12).map(function (p) { return { label: p.month.slice(2).replace('-', '/'), inc: Number(p.gross), out: Number(p.net) }; });
+    h += '<div class="card"><h3>每月總支給與實領</h3>' + barsChart(series) + '<div class="sub">灰：總支給　綠：實領（不含賞与，依支払月）</div></div>';
     var years = {};
     list.forEach(function (p) {
       var y = p.month.slice(0, 4), it = psItems(p), d = it.deduct || {};
-      var o = years[y] = years[y] || { gross: 0, social: 0, itax: 0, rtax: 0, net: 0, n: 0 };
-      o.gross += Number(p.gross); o.net += Number(p.net); o.n++;
-      Object.keys(d).forEach(function (k) { if (SOCIAL_RE.test(k)) o.social += d[k]; else if (/所得税/.test(k)) o.itax += d[k]; else if (/住民税/.test(k)) o.rtax += d[k]; });
+      var o = years[y] = years[y] || { gross: 0, bonus: 0, social: 0, itax: 0, rtax: 0, net: 0, n: 0 };
+      o.gross += Number(p.gross); o.net += Number(p.net);
+      if (isBonus(p)) o.bonus += Number(p.gross); else o.n++;
+      Object.keys(d).forEach(function (k) { if (SOCIAL_RE.test(k)) o.social += d[k]; else if (/所得税|年末調整/.test(k)) o.itax += d[k]; else if (/住民税/.test(k)) o.rtax += d[k]; });
     });
-    h += '<div class="card scroll-x"><h3>年度統計（依支払月）</h3><table class="t"><tr><th>年</th><th>月數</th><th>總支給</th><th>社保</th><th>所得税</th><th>住民税</th><th>實領</th></tr>' +
-      Object.keys(years).sort().reverse().map(function (y) { var o = years[y]; return '<tr><td>' + y + '</td><td>' + o.n + '</td><td>' + yen(o.gross) + '</td><td>' + yen(o.social) + '</td><td>' + yen(o.itax) + '</td><td>' + yen(o.rtax) + '</td><td>' + yen(o.net) + '</td></tr>'; }).join('') + '</table></div>';
-    var last = list.slice(-6), keys = {};
+    h += '<div class="card scroll-x"><h3>年度統計（依支払月）</h3><table class="t"><tr><th>年</th><th>月數</th><th>總支給（年收）</th><th>其中賞与</th><th>社保</th><th>所得税</th><th>住民税</th><th>實領</th></tr>' +
+      Object.keys(years).sort().reverse().map(function (y) { var o = years[y]; return '<tr><td>' + y + '</td><td>' + o.n + '</td><td>' + yen(o.gross) + '</td><td>' + (o.bonus ? yen(o.bonus) : '-') + '</td><td>' + yen(o.social) + '</td><td>' + yen(o.itax) + '</td><td>' + yen(o.rtax) + '</td><td>' + yen(o.net) + '</td></tr>'; }).join('') + '</table></div>';
+    var gs = D().payslips.filter(isGensen).sort(function (a, b) { return a.month < b.month ? 1 : -1; });
+    if (gs.length) {
+      h += '<div class="card scroll-x"><h3>和源泉徴収票對照</h3><div class="sub">薪資單合計＝同一年、同一家公司的薪資單（含賞与）；課稅額不含通勤等非課税項目。</div><table class="t"><tr><th>年／公司</th><th>項目</th><th>源泉徴収票</th><th>薪資單合計</th><th>差</th></tr>' +
+        gs.map(function (g) {
+          var gi = psItems(g), fld = gi.fields || {}, co = gi.company || '';
+          var mine = list.filter(function (p) { return p.month.slice(0, 4) === String(gi.year || g.month) && (psItems(p).company || '') === co; });
+          var tot = { pay: 0, social: 0, itax: 0 };
+          mine.forEach(function (p) {
+            var it = psItems(p), pay = it.pay || {}, d = it.deduct || {};
+            tot.pay += Number(p.gross) - Object.keys(pay).filter(function (k) { return /非課税/.test(k); }).reduce(function (s, k) { return s + pay[k]; }, 0);
+            Object.keys(d).forEach(function (k) { if (SOCIAL_RE.test(k)) tot.social += d[k]; else if (/所得税|年末調整/.test(k)) tot.itax += d[k]; });
+          });
+          var rows = [['支払金額', fld['支払金額'], tot.pay], ['社会保険料', fld['社会保険料等の金額'], tot.social], ['源泉徴収税額', fld['源泉徴収税額'], tot.itax]];
+          return rows.map(function (r, i) {
+            var diff = (r[1] || 0) - r[2];
+            return '<tr>' + (i ? '' : '<td rowspan="3">' + esc(String(gi.year || g.month)) + '<br><span class="sub">' + esc(co.replace(/（.*）/, '')) + '・' + mine.length + ' 份</span></td>') + '<td>' + r[0] + '</td><td class="num">' + yen(r[1] || 0) + '</td><td class="num">' + yen(r[2]) + '</td><td class="num' + (diff ? ' warn' : '') + '">' + (diff ? diff.toLocaleString() : '一致') + '</td></tr>';
+          }).join('') + (gi.note ? '<tr><td colspan="5" class="sub">' + esc(gi.note) + '</td></tr>' : '');
+        }).join('') + '</table></div>';
+    }
+    var last = regular.slice(-6), keys = {};
     last.forEach(function (p) { Object.keys(psItems(p).deduct || {}).forEach(function (k) { keys[k] = 1; }); });
     h += '<div class="card scroll-x"><h3>社保與稅金繳納紀錄</h3><div class="sub">和前一個月差超過 10% 會標黃色</div><table class="t"><tr><th>項目</th>' + last.map(function (p) { return '<th>' + p.month.slice(2).replace('-', '/') + '</th>'; }).join('') + '</tr>' +
       Object.keys(keys).map(function (k) {
@@ -441,7 +472,7 @@
           return '<td class="num' + (changed ? ' warn' : '') + '">' + v.toLocaleString() + '</td>';
         }).join('') + '</tr>';
       }).join('') + '<tr><td><b>控除合計</b></td>' + last.map(function (p) { return '<td class="num"><b>' + Number(p.deduction).toLocaleString() + '</b></td>'; }).join('') + '</tr></table></div>';
-    var lp = list[list.length - 1], li = psItems(lp), ld = li.deduct || {}, lpay = li.pay || {};
+    var lp = regular[regular.length - 1] || list[list.length - 1], li = psItems(lp), ld = li.deduct || {}, lpay = li.pay || {};
     var social = Object.keys(ld).filter(function (k) { return SOCIAL_RE.test(k); }).reduce(function (s, k) { return s + ld[k]; }, 0);
     var nontax = Object.keys(lpay).filter(function (k) { return /非課税/.test(k); }).reduce(function (s, k) { return s + lpay[k]; }, 0);
     h += '<div class="card"><h3>最新一期（' + lp.month + '）重點</h3><div class="sub">社保占課稅薪資 ' + (social / Math.max(1, lp.gross - nontax) * 100).toFixed(1) + '%，控除占總支給 ' + (lp.deduction / lp.gross * 100).toFixed(1) + '%。住民税 ' + yen(ld['住民税'] || 0) + ' 是從薪水扣（特別徴収），不用自己另外繳。</div></div>';
@@ -450,7 +481,7 @@
 
   /* ---------- 換工作試算 ---------- */
   PAGES.jobsim = function () {
-    var list = D().payslips.slice().sort(function (a, b) { return a.month < b.month ? -1 : 1; });
+    var list = slips().filter(function (p) { return !isBonus(p); }).sort(function (a, b) { return (a.payDate || a.month) < (b.payDate || b.month) ? -1 : 1; });
     var lp = list[list.length - 1];
     var it = lp ? psItems(lp) : { pay: {}, deduct: {} }, d = it.deduct || {}, pay = it.pay || {};
     var nontax = Object.keys(pay).filter(function (k) { return /非課税/.test(k); }).reduce(function (s, k) { return s + pay[k]; }, 0);
@@ -807,12 +838,19 @@
     psView: function (id) {
       var p = D().payslips.filter(function (x) { return x.id === id; })[0]; if (!p) return;
       var it = psItems(p);
+      if (isGensen(p)) {
+        var box = document.getElementById('psPreview'), fl = it.fields || {};
+        box.innerHTML = '<div class="card"><h3>源泉徴収票 ' + esc(String(it.year || p.month)) + '</h3><div class="sub">' + esc(it.company || '') + '</div>' +
+          Object.keys(fl).map(function (k) { return '<div class="row between"><span>' + esc(k) + '</span><span class="num">' + yen(fl[k]) + '</span></div>'; }).join('') +
+          (it.note ? '<div class="sub" style="margin-top:6px">' + esc(it.note) + '</div>' : '') + '</div>';
+        S.ps = null; window.scrollTo(0, 0); return;
+      }
       S.ps = Object.assign({}, p, { pay: it.pay || {}, deduct: it.deduct || {}, attendance: it.attendance || {}, warnings: [], _saved: true });
       drawPayslipPreview(); window.scrollTo(0, 0);
     },
     psDel: function () {
       if (!confirm('刪除這份明細？（工資收入紀錄不會一起刪）')) return;
-      var id = 'payslip-' + S.ps.month; S.data.payslips = D().payslips.filter(function (x) { return x.id !== id; });
+      var id = S.ps.id || ('payslip-' + S.ps.month); S.data.payslips = D().payslips.filter(function (x) { return x.id !== id; });
       enqueue('removePayslip', { id: id }); persist(); S.ps = null; render();
     },
 
