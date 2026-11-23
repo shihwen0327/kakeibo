@@ -18,7 +18,7 @@
   function persist() { save('kk_data', S.data); save('kk_queue', S.queue); }
 
   function D() { return S.data || { tx: [], categories: [], budgets: [], accounts: [], recurring: [], rules: [], cards: [], funds: [], payslips: [], settings: {} }; }
-  function setting(k, d) { var v = D().settings[k]; return v === undefined || v === '' ? d : v; }
+  function setting(k, d) { var v = D().settings[k]; if (k === 'budgetStart' && v) v = String(v).slice(0, 10); return v === undefined || v === '' ? d : v; }
   function startDay() { return Number(setting('cycleStartDay', 10)) || 10; }
 
   /* ===================== 後端 ===================== */

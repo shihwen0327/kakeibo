@@ -429,7 +429,10 @@ function readObjects_(k) {
     var o = {};
     for (var j = 0; j < head.length; j++) {
       var v = vals[i][j];
-      if (v instanceof Date) v = (head[j] === 'date' || head[j] === 'payDate') ? fmt_(v) : Utilities.formatDate(v, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ss");
+      if (v instanceof Date) {
+        var hms = Utilities.formatDate(v, 'Asia/Tokyo', 'HH:mm:ss');
+        v = (head[j] === 'date' || head[j] === 'payDate' || hms === '00:00:00') ? fmt_(v) : Utilities.formatDate(v, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ss");
+      }
       o[head[j]] = v === null ? '' : v;
     }
     if ('amount' in o) o.amount = Number(String(o.amount).replace(/,/g, '')) || 0;
