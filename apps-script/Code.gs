@@ -477,7 +477,7 @@ function ensurePrice_(t) {
 function writePrices_(rows) {
   writeObjects_('prices', rows.map(function (r) {
     var o = Object.assign({}, r);
-    o.live = r.gf && String(r.manual).toUpperCase() !== 'TRUE' ? '=GOOGLEFINANCE("' + r.gf + '","price")' : '';
+    o.live = r.gf && String(r.manual).toUpperCase() !== 'TRUE' ? (/^CURRENCY:/.test(r.gf) ? '=GOOGLEFINANCE("' + r.gf + '")' : '=GOOGLEFINANCE("' + r.gf + '","price")') : '';
     return o;
   }));
 }
@@ -490,7 +490,7 @@ function refreshPrices_() {
   if (!rows.length) return [];
   writePrices_(rows);
   SpreadsheetApp.flush();
-  Utilities.sleep(4000);
+  for (var w = 0; w < 6; w++) { Utilities.sleep(2500); if (!readObjects_('prices').some(function (r) { return /Loading|載入|読み込み/.test(String(r.live)); })) break; }
   var fresh = readObjects_('prices');
   fresh.forEach(function (r) { var v = Number(r.live); if (r.live !== '' && !isNaN(v) && v > 0) { r.price = v; r.updatedAt = nowIso_(); } });
   writePrices_(fresh);
