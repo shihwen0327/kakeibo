@@ -23,7 +23,7 @@ W.openConnect = (fromSettings) => {
     <div class="fc" style="margin:16px 0"><label class="fr"><span class="k">網址</span><input id="cu" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(g.url || '')}" autocomplete="off"></label>
     <label class="fr"><span class="k">密碼</span><input id="ct" placeholder="setup 時產生的密碼" value="${esc(g.token || '')}" autocomplete="off"></label></div>
     <button class="pb big" id="cgo">連線</button><p id="cmsg" class="note" style="text-align:center;min-height:20px;margin-top:10px"></p>
-    <div class="bb" style="flex-direction:column;padding:0">${fromSettings && g.url ? '<button class="pb" id="coff" style="width:100%;color:var(--red)">中斷連線（資料留在試算表）</button>' : ''}<button class="pb" id="cloc" style="width:100%">${fromSettings ? '取消' : '先不連線，只存在這台裝置'}</button></div></div>`;
+    <div class="bb col" style="padding:0">${fromSettings && g.url ? '<button class="pb" id="coff" style="width:100%;color:var(--red)">中斷連線（資料留在試算表）</button>' : ''}<button class="pb" id="cloc" style="width:100%">${fromSettings ? '取消' : '先不連線，只存在這台裝置'}</button></div></div>`;
   const pg = W.page('modal', p => { p.in.innerHTML = html;
     const g2 = s => p.in.querySelector(s);
     g2('#cgo').onclick = async () => { const url = g2('#cu').value.trim(), token = g2('#ct').value.trim();
@@ -44,12 +44,13 @@ async function welcome() {
     <div style="font-size:44px">📒</div><h2 style="margin:8px 0">Wen 記帳</h2>
     <p class="sub" style="font-size:15px">還沒有資料。${seed ? '可以載入內建的薪資單與收支紀錄，或' : ''}匯入之前下載的備份檔（wen-kakeibo-backup-….json），也可以直接開始，之後再上傳薪資單、匯入 CSV。</p>
     <p class="sub" style="font-size:13px">儲存位置：${esc(W.Store.label())}</p>
-    <div class="bb" style="flex-direction:column;gap:10px">${seed ? '<button class="pb big" id="go">載入內建資料</button>' : ''}<button class="pb big" id="bk" ${seed ? 'style="background:#2c2c2e"' : ''}>匯入備份檔</button><button class="pb" id="emp">直接開始（空白）</button></div><p id="prog" class="sub" style="font-size:13px"></p></div></div>`;
+    <div class="bb col">${seed ? '<button class="pb big" id="go">載入內建資料</button>' : ''}<button class="pb big" id="bk" ${seed ? 'style="background:#2c2c2e"' : ''}>匯入備份檔</button><button class="pb" id="emp">直接開始（空白）</button>${W.Store.mode === 'local' && !W.Store.inClaude ? '<button class="pb" id="cn" style="color:var(--blue)">改連 Google 試算表</button>' : ''}</div><p id="prog" class="sub" style="font-size:13px"></p></div></div>`;
   const prog = (i, n) => W.$('#prog').textContent = `寫入中… ${i}/${n}`;
   const lock = v => W.$$('.loading button').forEach(b => b.disabled = v);
   const run = async f => { lock(true); try { await f(); start(); } catch (e) { W.$('#prog').textContent = '失敗：' + (e && (e.code || e.message) || '請重新整理再試'); lock(false); } };
   if (seed) W.$('#go').onclick = () => run(() => W.seed(prog));
   W.$('#bk').onclick = () => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.json,application/json'; i.onchange = () => i.files[0] && run(async () => W.importBackup(await W.readBackup(i.files[0]), prog)); i.click(); };
+  const cn = W.$('#cn'); if (cn) cn.onclick = () => W.openConnect(true);
   W.$('#emp').onclick = () => run(() => W.importBackup({app: 'wen-kakeibo', slips: [], recs: []}, prog));
 }
 function start() { W.$('#tabs').hidden = false; W.render(); }
