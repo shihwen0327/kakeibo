@@ -1,796 +1,96 @@
 /**
  * Wen 記帳 — Google Apps Script 後端
- * 資料存在這個 Google 試算表；手機 App 和 iPhone 捷徑都呼叫這支 Web App。
- * 第一次使用：在編輯器選 setup 執行一次（會建分頁、預設資料、每日排程，並產生 API 金鑰）。
+ * 資料存在你自己的 Google 試算表「Wen 記帳 薪資與收支」；薪資單 PDF、匯入的 CSV 存在 Google Drive「Wen 記帳」資料夾。
+ *
+ * 第一次設定：
+ *  1. 到 script.google.com 新增專案，把這個檔案的內容貼進 Code.gs。
+ *  2. 上方選「setup」→ 執行 → 允許權限。執行紀錄會列出試算表網址和「密碼」。
+ *  3. 部署 → 新增部署作業 → 類型「網頁應用程式」→ 執行身分「我」、存取權「所有人」→ 部署，複製網址。
+ *  4. 在 App 輸入網址和密碼。
+ * 沒有密碼的人打不開資料；密碼只存在你的裝置上。
  */
-
-var SHEETS = {
-  tx: ['id', 'date', 'type', 'category', 'group', 'amount', 'currency', 'account', 'member', 'tags', 'note', 'source', 'extId', 'status', 'createdAt', 'updatedAt', 'toAccount', 'toAmount', 'toCurrency', 'installments', 'receipt'],
-  categories: ['name', 'group', 'type', 'emoji', 'order', 'excludeBudget', 'hidden'],
-  budgets: ['category', 'period', 'amount'],
-  accounts: ['name', 'type', 'icon', 'color', 'closeDay', 'payDay', 'payAccount', 'order', 'active', 'currency', 'opening', 'openingDate', 'autopay', 'rate', 'payment', 'principal'],
-  recurring: ['id', 'name', 'category', 'amount', 'account', 'day', 'active', 'note', 'type', 'freq', 'month', 'toAccount'],
-  rules: ['keyword', 'category', 'account'],
-  cards: ['keyword', 'account'],
-  funds: ['id', 'date', 'fund', 'amount', 'note'],
-  payslips: ['id', 'month', 'payDate', 'gross', 'deduction', 'net', 'items', 'createdAt'],
-  settings: ['key', 'value'],
-  trades: ['id', 'date', 'account', 'symbol', 'name', 'market', 'side', 'qty', 'price', 'fee', 'currency', 'settle', 'note', 'createdAt'],
-  prices: ['symbol', 'gf', 'price', 'currency', 'manual', 'updatedAt', 'live']
+const SHEETS = {
+  rec: {name: '收支紀錄', head: ['UUID', '日期', '收支', '類別', '大類別', '金額', '幣別', '成員', '帳戶', '標籤', '備註', '每日家計簿最後更新']},
+  slip: {name: '薪資單', head: ['ID', '種類', '公司', '勤務月', '支払日', '總支給', '社會保險', '所得税', '住民税', '其他扣除', '控除合計', '實領', 'PDF', '明細(JSON)']},
+  meta: {name: '設定', head: ['key', 'value']}
 };
-var SHEET_NAMES = { tx: 'Transactions', categories: 'Categories', budgets: 'Budgets', accounts: 'Accounts', recurring: 'Recurring', rules: 'Rules', cards: 'Cards', funds: 'Funds', payslips: 'Payslips', settings: 'Settings', trades: 'Trades', prices: 'Prices' };
-var EDITABLE = ['categories', 'budgets', 'accounts', 'recurring', 'rules', 'cards'];
-var OWNER_ONLY = ['listBooks', 'createBook', 'renameBook', 'removeBook', 'shareBook', 'importSheet', 'ocr', 'savePayslip', 'removePayslip'];
-
-/* ===================== 初始化 ===================== */
-
-/* 從試算表「擴充功能」打開的專案直接用那份試算表；
-   在 script.google.com 直接新增的專案，第一次執行 setup 會自動建立一份「Wen 記帳資料」試算表 */
-var CUR_BOOK = null, CUR_SS = null;
-function ss_() {
-  if (CUR_BOOK) return CUR_SS || (CUR_SS = SpreadsheetApp.openById(CUR_BOOK.sheetId));
-  var a = SpreadsheetApp.getActive();
-  if (a) return a;
-  var props = PropertiesService.getScriptProperties(), id = props.getProperty('SHEET_ID');
-  if (id) return SpreadsheetApp.openById(id);
-  var n = SpreadsheetApp.create('Wen 記帳資料');
-  props.setProperty('SHEET_ID', n.getId());
-  return n;
-}
 
 function setup() {
-  var ss = ss_();
-  setupSheets_(ss);
-  seedDefaults_();
-  var props = PropertiesService.getScriptProperties();
-  if (!props.getProperty('TOKEN')) props.setProperty('TOKEN', Utilities.getUuid().replace(/-/g, ''));
-  setSetting_('apiToken', props.getProperty('TOKEN'));
-  if (!settingsMap_().budgetStart) setSetting_('budgetStart', cycleOf_(todayStr_(), 10).start); // 年預算從開始用這個 App 的那一期算
-  installTriggers();
-  Logger.log('API 金鑰：' + props.getProperty('TOKEN'));
-  Logger.log('資料試算表：' + ss.getUrl());
-  return props.getProperty('TOKEN');
-}
-/* 建立所有分頁與標題（新帳本也用這個） */
-function setupSheets_(ss) {
-  Object.keys(SHEETS).forEach(function (k) {
-    var sh = ss.getSheetByName(SHEET_NAMES[k]) || ss.insertSheet(SHEET_NAMES[k]);
-    if (sh.getLastRow() === 0) {
-      sh.getRange(1, 1, 1, SHEETS[k].length).setValues([SHEETS[k]]).setFontWeight('bold');
-      sh.setFrozenRows(1);
-    }
-  });
-  ss.getSheetByName(SHEET_NAMES.tx).getRange('B:B').setNumberFormat('@');
-  ss.getSheetByName(SHEET_NAMES.tx).getRange('M:M').setNumberFormat('@');
-  ss.getSheetByName(SHEET_NAMES.funds).getRange('B:B').setNumberFormat('@');
-  ss.getSheetByName(SHEET_NAMES.payslips).getRange('B:C').setNumberFormat('@');
-  ss.getSheetByName(SHEET_NAMES.trades).getRange('B:B').setNumberFormat('@');
-  ensureHeaders_();
-  ['工作表1', 'Sheet1', 'シート1'].forEach(function (n) { var s = ss.getSheetByName(n); if (s && s.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s); });
+  const P = PropertiesService.getScriptProperties();
+  let id = P.getProperty('SHEET_ID'), ss;
+  if (id) ss = SpreadsheetApp.openById(id);
+  else { ss = SpreadsheetApp.create('Wen 記帳 薪資與收支'); P.setProperty('SHEET_ID', ss.getId()); }
+  for (const k in SHEETS) sheet_(ss, k);
+  const first = ss.getSheets()[0]; if (first.getName() === 'Sheet1' || first.getName() === '工作表1') { if (ss.getSheets().length > 1) ss.deleteSheet(first); }
+  if (!P.getProperty('FOLDER_ID')) P.setProperty('FOLDER_ID', DriveApp.createFolder('Wen 記帳').getId());
+  if (!P.getProperty('TOKEN')) P.setProperty('TOKEN', Utilities.getUuid().replace(/-/g, ''));
+  Logger.log('試算表：' + ss.getUrl());
+  Logger.log('密碼：' + P.getProperty('TOKEN'));
 }
 
-function installTriggers() {
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'runRecurring') ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('runRecurring').timeBased().everyDays(1).atHour(6).inTimezone('Asia/Tokyo').create();
-}
-
-function seedDefaults_() {
-  seed_('categories', DEFAULT_CATEGORIES.map(function (c, i) { return { name: c[0], group: c[1], type: c[2], emoji: c[3], order: i + 1, excludeBudget: c[4] ? 'TRUE' : '' }; }));
-  seed_('budgets', DEFAULT_BUDGETS.map(function (b) { return { category: b[0], period: b[1], amount: b[2] }; }));
-  seed_('accounts', DEFAULT_ACCOUNTS.map(function (a, i) { return { name: a[0], type: a[1], color: a[2], closeDay: a[3] || '', payDay: a[4] || '', payAccount: a[5] || '', order: i + 1, active: 'TRUE', icon: '' }; }));
-  seed_('recurring', DEFAULT_RECURRING.map(function (r, i) { return { id: 'r' + (i + 1), name: r[0], category: r[1], amount: r[2], account: r[3], day: r[4], active: 'TRUE', note: r[0] }; }));
-  seed_('rules', DEFAULT_RULES.map(function (r) { return { keyword: r[0], category: r[1], account: '' }; }));
-  seed_('cards', DEFAULT_CARDS.map(function (r) { return { keyword: r[0], account: r[1] }; }));
-  seed_('settings', DEFAULT_SETTINGS.map(function (r) { return { key: r[0], value: r[1] }; }));
-}
-function seed_(k, rows) { if (sheet_(k).getLastRow() <= 1) appendObjects_(k, rows); }
-
-/* [名稱, 大類別, 收/支, emoji, 不算預算] */
-var DEFAULT_CATEGORIES = [
-  ['食材', '吃', '支', '🥩'], ['早餐', '吃', '支', '🍞'], ['午餐', '吃', '支', '🍔'], ['晚餐', '吃', '支', '🍴'],
-  ['宵夜', '吃', '支', '🍰'], ['點心', '吃', '支', '🍦'], ['飲料', '吃', '支', '🍹'],
-  ['日常用品', '生活', '支', '🛍️'], ['服飾', '生活', '支', '👕'], ['美容美髮', '生活', '支', '💄'], ['醫療保健', '生活', '支', '💊'], ['レジ袋', '生活', '支', '🛍'],
-  ['房租', '住', '支', '🏡'], ['電', '住', '支', '💡'], ['瓦斯', '住', '支', '🔥'], ['水', '住', '支', '💧'], ['水電瓦斯', '住', '支', '💡'],
-  ['ネットワーク', '住', '支', '📱'], ['會員費', '住', '支', '⭐'],
-  ['汽油', '車', '支', '⛽'], ['汽車', '車', '支', '🚗'], ['保險', '車', '支', '☂️'], ['R15M', '車', '支', '🏍️'],
-  ['交通', '交通', '支', '🚆'],
-  ['娛樂', '娛樂', '支', '🎤'], ['交際應酬', '娛樂', '支', '🍻'], ['健身', '娛樂', '支', '🏸'],
-  ['學習深造', '學習', '支', '📖'], ['教育', '學習', '支', '🎓'],
-  ['住宿', '旅遊', '支', '🏯'], ['出去玩早餐', '旅遊', '支', '🍞'], ['出去玩午餐', '旅遊', '支', '🍔'], ['出去玩晚餐', '旅遊', '支', '🍴'],
-  ['出去玩點心', '旅遊', '支', '🍰'], ['出去玩飲料', '旅遊', '支', '🍹'], ['出去玩買醉', '旅遊', '支', '🍻'], ['出去玩搭車車', '旅遊', '支', '🚆'],
-  ['搭灰機', '旅遊', '支', '✈️'], ['出去玩門票', '旅遊', '支', '🎫'], ['ロッカー', '旅遊', '支', '📫'],
-  ['稅金', '其他', '支', '💸'], ['郵寄', '其他', '支', '📫'], ['運賃', '其他', '支', '🚚'], ['まとめ', '其他', '支', '🛍️'],
-  ['轉帳手續費', '其他', '支', '🏦'], ['國際匯款', '其他', '支', '💸', true], ['公司', '其他', '支', '💼', true], ['待分類', '其他', '支', '❓'],
-  ['工資', '收入', '收', '💴'], ['獎金', '收入', '收', '🎁'], ['副業', '收入', '收', '💼'], ['退費', '收入', '收', '↩️'],
-  ['投資', '收入', '收', '📈'], ['點數', '收入', '收', '🪙'], ['代收', '收入', '收', '📥']
-];
-/* 類別名稱前面加 # 代表整個大類別的預算 */
-var DEFAULT_BUDGETS = [
-  ['食材', 'month', 27000], ['午餐', 'month', 7000], ['晚餐', 'month', 5000], ['早餐', 'month', 2000],
-  ['飲料', 'month', 2000], ['點心', 'month', 1500], ['宵夜', 'month', 500],
-  ['日常用品', 'month', 6000], ['服飾', 'month', 2000], ['美容美髮', 'month', 2000], ['醫療保健', 'month', 2455],
-  ['房租', 'month', 35545], ['瓦斯', 'month', 7000], ['電', 'month', 5000], ['水', 'month', 1500],
-  ['ネットワーク', 'month', 8000], ['會員費', 'month', 1000],
-  ['汽油', 'month', 15000], ['娛樂', 'month', 4000], ['交際應酬', 'month', 2000],
-  ['汽車', 'year', 96000], ['#旅遊', 'year', 60000]
-];
-/* [名稱, 種類, 顏色, 結帳日, 繳款日, 扣款帳戶] 種類：bank/debit/credit/emoney/cash/foreign */
-var DEFAULT_ACCOUNTS = [
-  ['ゆうちょ', 'bank', '#2e7d32'], ['ゆうちょデビット', 'debit', '#43a047'], ['Epos', 'credit', '#c62828', 27, 27, 'ゆうちょ'],
-  ['Pay Pay', 'emoney', '#e53935'], ['Suica', 'emoney', '#7cb342'], ['Nanako', 'emoney', '#f9a825'],
-  ['Revolut', 'debit', '#455a64'], ['日圓現金', 'cash', '#8d6e63'], ['スターバックス', 'emoney', '#00796b'], ['SU PAY', 'emoney', '#6a1b9a'],
-  ['Wise JPY', 'bank', '#9ccc65'], ['Line Bank', 'foreign', '#1b5e20'], ['中信', 'foreign', '#00695c'], ['現金', 'foreign', '#795548']
-];
-/* [名稱, 類別, 金額, 帳戶, 每月幾號] */
-var DEFAULT_RECURRING = [
-  ['房租', '房租', 35545, 'ゆうちょ', 27], ['手機', 'ネットワーク', 3900, 'ゆうちょ', 27], ['家用網路', 'ネットワーク', 4048, 'ゆうちょ', 27],
-  ['Amazon Prime', '會員費', 600, 'Pay Pay', 14], ['Spotify', '會員費', 313, 'Pay Pay', 1]
-];
-var DEFAULT_RULES = [
-  ['ENEOS', '汽油'], ['エネオス', '汽油'], ['出光', '汽油'], ['apollostation', '汽油'], ['コスモ石油', '汽油'], ['Shell', '汽油'],
-  ['スターバックス', '飲料'], ['STARBUCKS', '飲料'],
-  ['ゆめタウン', '食材'], ['サンリブ', '食材'], ['マルショク', '食材'], ['トライアル', '食材'], ['TRIAL', '食材'],
-  ['イオン', '食材'], ['AEON', '食材'], ['ハローデイ', '食材'], ['ロッキー', '食材'], ['業務スーパー', '食材'],
-  ['ドラッグストアコスモス', '日常用品'], ['DRUG COSMOS', '日常用品'], ['ダイソー', '日常用品'], ['DAISO', '日常用品'],
-  ['ニトリ', '日常用品'], ['無印良品', '日常用品'], ['ユニクロ', '服飾'], ['UNIQLO', '服飾'],
-  ['Amazon Prime', '會員費'], ['Spotify', '會員費'], ['Netflix', '會員費'],
-  ['マクドナルド', '午餐'], ['McDonald', '午餐'], ['すき家', '午餐'], ['吉野家', '午餐']
-];
-var DEFAULT_CARDS = [
-  ['epos', 'Epos'], ['エポス', 'Epos'], ['revolut', 'Revolut'], ['suica', 'Suica'], ['nanaco', 'Nanako'],
-  ['ゆうちょ', 'ゆうちょデビット'], ['jp bank', 'ゆうちょデビット'], ['japan post', 'ゆうちょデビット']
-];
-var DEFAULT_SETTINGS = [
-  ['cycleStartDay', '10'], ['payDay', '10'], ['twdRate', '4.8'], ['alertPercent', '80'],
-  ['fund_緊急預備金_target', '450000'], ['fund_緊急預備金_monthly', '15500'],
-  ['fund_台灣準備金_target', '90000'], ['fund_台灣準備金_monthly', '30000'],
-  ['fund_NISA_target', '0'], ['fund_NISA_monthly', '0']
-];
-
-/* ===================== 入口 ===================== */
-
-function doGet(e) { return handle_(e.parameter || {}); }
+function doGet() { return out_({ok: true, app: 'Wen 記帳'}); }
 function doPost(e) {
-  var body = {};
-  try { body = JSON.parse(e.postData.contents); } catch (err) { body = e.parameter || {}; }
-  return handle_(body);
-}
-
-function handle_(req) {
   try {
-    var token = PropertiesService.getScriptProperties().getProperty('TOKEN'), tk = String(req.token || '');
-    var books = books_(), book = null;
-    if (token && tk === token) {
-      if (req.book && req.book !== 'main') { book = books.filter(function (b) { return b.id === req.book; })[0]; if (!book) return out_({ ok: false, error: '找不到這個帳本' }, req); }
-      req._owner = true;
-    } else {
-      book = books.filter(function (b) { return b.token && b.token === tk; })[0];
-      if (!book) return out_({ ok: false, error: 'API 金鑰錯誤' }, req);
-      if (OWNER_ONLY.indexOf(req.action) >= 0) return out_({ ok: false, error: '共享帳本不能使用這個功能' }, req);
-    }
-    CUR_BOOK = book; CUR_SS = null;
-    var fn = ACTIONS[req.action];
-    if (!fn) return out_({ ok: false, error: '未知的動作：' + req.action }, req);
-    var res = fn(req) || {};
-    res.ok = true;
-    return out_(res, req);
-  } catch (err) {
-    return out_({ ok: false, error: String(err && err.message || err) }, req);
-  }
+    const req = JSON.parse(e.postData.contents);
+    const P = PropertiesService.getScriptProperties();
+    if (!P.getProperty('TOKEN') || req.token !== P.getProperty('TOKEN')) return out_({ok: false, error: '密碼不對'});
+    const lock = LockService.getScriptLock(); lock.waitLock(30000);
+    try { return out_(Object.assign({ok: true}, ACTIONS[req.action] ? ACTIONS[req.action](req) : {ok: false, error: '不支援的動作 ' + req.action})); }
+    finally { lock.releaseLock(); }
+  } catch (err) { return out_({ok: false, error: String(err && err.message || err)}); }
 }
 
-/* 捷徑呼叫時回傳一行文字，直接拿來當通知內容 */
-function out_(obj, req) {
-  if (obj._text !== undefined) return ContentService.createTextOutput(obj._text);
-  if (!obj.ok && req && req.text) return ContentService.createTextOutput('錯誤：' + obj.error);
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
-}
-
-var ACTIONS = {
-  bootstrap: function (req) {
-    ensureHeaders_();
-    var o = {};
-    Object.keys(SHEETS).forEach(function (k) { if (k !== 'settings') o[k] = readObjects_(k); });
-    o.settings = settingsMap_();
-    o.serverTime = nowIso_();
-    o.book = CUR_BOOK ? { id: CUR_BOOK.id, name: CUR_BOOK.name, url: 'https://docs.google.com/spreadsheets/d/' + CUR_BOOK.sheetId } : { id: 'main', name: '我的帳本', url: ss_().getUrl() };
-    if (req && req._owner) o.books = [{ id: 'main', name: '我的帳本' }].concat(books_().map(function (b) { return { id: b.id, name: b.name, token: b.token, shared: b.shared || [] }; }));
-    return o;
+const ACTIONS = {
+  ping: () => ({}),
+  load: () => {
+    const ss = ss_(); const metaRow = rows_(sheet_(ss, 'meta')).find(r => r[0] === 'meta');
+    if (!metaRow) return {meta: null};
+    return {meta: JSON.parse(metaRow[1]), slips: rows_(sheet_(ss, 'slip')).map(slipFromRow_), recs: rows_(sheet_(ss, 'rec')).map(recFromRow_)};
   },
-  add: function (req) {
-    var list = req.txs || [req.tx];
-    return { added: withLock_(function () { return appendTx_(list); }) };
-  },
-  update: function (req) {
-    var list = req.txs || [req.tx];
-    return withLock_(function () { var n = 0; list.forEach(function (t) { n += updateRow_('tx', t); }); return { updated: n }; });
-  },
-  remove: function (req) {
-    return withLock_(function () { return { removed: deleteRow_('tx', req.id) }; });
-  },
-  saveTable: function (req) {
-    if (EDITABLE.indexOf(req.table) < 0) throw new Error('不能覆蓋這張表');
-    return withLock_(function () { writeObjects_(req.table, req.rows || []); return { saved: (req.rows || []).length }; });
-  },
-  saveSettings: function (req) {
-    withLock_(function () { Object.keys(req.settings || {}).forEach(function (k) { setSetting_(k, req.settings[k]); }); });
-    return { settings: settingsMap_() };
-  },
-  addFund: function (req) {
-    var f = req.fund; f.id = f.id || Utilities.getUuid();
-    withLock_(function () { appendObjects_('funds', [f]); });
-    return { fund: f };
-  },
-  removeFund: function (req) { return withLock_(function () { return { removed: deleteRow_('funds', req.id) }; }); },
-
-  /* iPhone 錢包自動化：merchant / amount / card */
-  wallet: function (req) {
-    var amount = parseAmount_(req.amount);
-    if (!amount) return { _text: '沒有記帳：讀不到金額（' + req.amount + '）' };
-    var merchant = String(req.merchant || '').trim();
-    var account = matchCard_(req.card) || String(req.card || '');
-    var category = matchRule_(merchant);
-    var tx = { id: Utilities.getUuid(), date: todayStr_(), type: '支', category: category || '待分類', amount: amount, currency: 'JPY', account: account, member: '自己', note: merchant, source: 'wallet', status: category ? 'ok' : 'inbox' };
-    withLock_(function () { appendTx_([tx]); });
-    return { _text: txMessage_(tx) };
-  },
-  /* 關閉 PayPay 時跳出的捷徑：amount / category / note */
-  quick: function (req) {
-    var amount = parseAmount_(req.amount);
-    if (!amount) return { _text: '沒有記帳（金額空白）' };
-    var cat = String(req.category || '').trim() || '待分類';
-    var tx = { id: Utilities.getUuid(), date: req.date || todayStr_(), type: req.type || '支', category: cat, amount: amount, currency: 'JPY', account: req.account || 'Pay Pay', member: '自己', note: req.note || '', source: 'paypay-quick', status: cat === '待分類' ? 'inbox' : 'ok' };
-    withLock_(function () { appendTx_([tx]); });
-    return { _text: txMessage_(tx) };
-  },
-  categoryList: function () {
-    var names = readObjects_('categories').filter(function (c) { return c.type === '支' && c.group !== '旅遊' && c.name !== '水電瓦斯' && c.name !== '待分類' && String(c.hidden).toUpperCase() !== 'TRUE'; })
-      .sort(function (a, b) { return Number(a.order) - Number(b.order); }).map(function (c) { return c.name; });
-    return { _text: names.join('\n') };
-  },
-  /* 每天 / 每週摘要通知 */
-  summary: function (req) { return { _text: summaryText_(req.period === 'week' ? 'week' : 'day') }; },
-
-  ocr: function (req) {
-    var blob = Utilities.newBlob(Utilities.base64Decode(req.base64), req.mimeType || 'application/pdf', req.filename || 'payslip.pdf');
-    var file = Drive.Files.create({ name: 'ocr-tmp-' + Date.now(), mimeType: 'application/vnd.google-apps.document' }, blob, { ocrLanguage: 'ja' });
-    var text = DocumentApp.openById(file.id).getBody().getText();
-    Drive.Files.remove(file.id);
-    return { text: text };
-  },
-  savePayslip: function (req) {
-    var p = req.payslip;
-    p.id = p.id || ('payslip-' + p.month);
-    var items = typeof p.items === 'string' ? p.items : JSON.stringify(p.items || {});
-    withLock_(function () {
-      deleteRow_('payslips', p.id);
-      appendObjects_('payslips', [{ id: p.id, month: p.month, payDate: p.payDate, gross: p.gross, deduction: p.deduction, net: p.net, items: items, createdAt: nowIso_() }]);
-      if (req.addIncome) appendTx_([{ id: 'salary-' + p.month, date: p.payDate, type: '收', category: '工資', amount: p.net, currency: 'JPY', account: 'ゆうちょ', member: '自己', note: p.month + ' 薪資（明細判讀）', source: 'payslip', extId: p.id, status: 'ok' }]);
-    });
-    return { payslip: p };
-  },
-  removePayslip: function (req) { return withLock_(function () { return { removed: deleteRow_('payslips', req.id) }; }); },
-  runRecurring: function () { return { created: runRecurringBook_() }; },
-  /* ---------- 多帳本 ---------- */
-  listBooks: function () { return { books: books_().map(function (b) { return { id: b.id, name: b.name, token: b.token, shared: b.shared || [] }; }) }; },
-  createBook: function (req) {
-    var name = String(req.name || '').trim(); if (!name) throw new Error('請輸入帳本名稱');
-    var cats = readObjects_('categories'), accs = readObjects_('accounts'), st = settingsMap_();
-    var ss = SpreadsheetApp.create('Wen 記帳 - ' + name);
-    var b = { id: 'b' + Date.now().toString(36), name: name, sheetId: ss.getId(), token: Utilities.getUuid().replace(/-/g, ''), shared: [] };
-    CUR_BOOK = b; CUR_SS = ss;
-    setupSheets_(ss);
-    writeObjects_('categories', cats);
-    writeObjects_('accounts', accs.map(function (a) { a.opening = ''; a.openingDate = ''; return a; }));
-    [['cycleStartDay', st.cycleStartDay || 10], ['alertPercent', st.alertPercent || 80], ['members', req.members || '自己'], ['budgetStart', todayStr_()]].forEach(function (r) { setSetting_(r[0], r[1]); });
-    var list = books_(); list.push(b); saveBooks_(list);
-    return { book: { id: b.id, name: b.name, token: b.token, shared: [] } };
-  },
-  renameBook: function (req) {
-    var list = books_(), b = list.filter(function (x) { return x.id === req.id; })[0]; if (!b) throw new Error('找不到帳本');
-    b.name = String(req.name || b.name).trim(); saveBooks_(list);
-    try { SpreadsheetApp.openById(b.sheetId).rename('Wen 記帳 - ' + b.name); } catch (e) {}
-    return { id: b.id, name: b.name };
-  },
-  removeBook: function (req) { saveBooks_(books_().filter(function (x) { return x.id !== req.id; })); return { removed: req.id }; },
-  shareBook: function (req) {
-    var list = books_(), b = list.filter(function (x) { return x.id === req.id; })[0]; if (!b) throw new Error('找不到帳本');
-    if (req.newToken) b.token = Utilities.getUuid().replace(/-/g, '');
-    var email = String(req.email || '').trim();
-    if (email) { DriveApp.getFileById(b.sheetId).addEditor(email); b.shared = (b.shared || []).filter(function (x) { return x !== email; }).concat([email]); }
-    saveBooks_(list);
-    return { id: b.id, name: b.name, token: b.token, shared: b.shared || [] };
-  },
-  /* ---------- 投資 ---------- */
-  saveTrade: function (req) {
-    var t = req.trade; t.id = t.id || Utilities.getUuid(); t.createdAt = t.createdAt || nowIso_();
-    withLock_(function () { deleteRow_('trades', t.id); appendObjects_('trades', [t]); ensurePrice_(t); });
-    return { trade: t };
-  },
-  removeTrade: function (req) { return withLock_(function () { return { removed: deleteRow_('trades', req.id) }; }); },
-  setPrice: function (req) {
-    return withLock_(function () {
-      var rows = readObjects_('prices'), r = rows.filter(function (x) { return x.symbol === req.symbol; })[0];
-      if (!r) { r = { symbol: req.symbol, gf: '', currency: req.currency || 'JPY' }; rows.push(r); }
-      r.price = Number(req.price); r.manual = req.manual === false ? '' : 'TRUE'; r.updatedAt = nowIso_();
-      writePrices_(rows); return { price: r };
-    });
-  },
-  refreshPrices: function () { return { prices: refreshPrices_() }; },
-  /* ---------- 收據 ---------- */
-  uploadReceipt: function (req) {
-    var folder = receiptFolder_();
-    var blob = Utilities.newBlob(Utilities.base64Decode(req.base64), req.mimeType || 'image/jpeg', (req.txId || 'receipt') + '.jpg');
-    var f = folder.createFile(blob);
-    if (req.txId) withLock_(function () { updateRow_('tx', { id: req.txId, receipt: f.getId() }); });
-    return { fileId: f.getId() };
-  },
-  getReceipt: function (req) {
-    var f = DriveApp.getFileById(req.fileId);
-    return { base64: Utilities.base64Encode(f.getBlob().getBytes()), mimeType: f.getMimeType() };
-  },
-  removeReceipt: function (req) {
-    try { DriveApp.getFileById(req.fileId).setTrashed(true); } catch (e) {}
-    if (req.txId) withLock_(function () { updateRow_('tx', { id: req.txId, receipt: '' }); });
-    return { removed: true };
-  },
-  renameCategory: function (req) {
-    var from = String(req.from || ''), to = String(req.to || '').trim();
-    if (!from || !to || from === to) throw new Error('名稱不能空白');
-    return withLock_(function () {
-      return { tx: renameIn_('tx', ['category'], from, to) + renameIn_('budgets', ['category'], from, to) + renameIn_('recurring', ['category'], from, to) + renameIn_('rules', ['category'], from, to) + renameIn_('categories', ['name'], from, to) };
-    });
-  },
-  renameAccount: function (req) {
-    var from = String(req.from || ''), to = String(req.to || '').trim();
-    if (!from || !to || from === to) throw new Error('名稱不能空白');
-    return withLock_(function () {
-      return { tx: renameIn_('tx', ['account', 'toAccount'], from, to) + renameIn_('recurring', ['account'], from, to) + renameIn_('rules', ['account'], from, to) + renameIn_('cards', ['account'], from, to) + renameIn_('accounts', ['name', 'payAccount'], from, to) };
-    });
-  },
-
-  /* 從雲端硬碟裡的試算表（舊記帳 App 匯出的 CSV 轉成的）匯入，用 UUID 判斷不重複 */
-  importSheet: function (req) {
-    var vals = SpreadsheetApp.openById(req.fileId).getSheets()[0].getDataRange().getValues();
-    var head = vals[0].map(function (h) { return String(h).replace(/^\uFEFF/, '').trim(); });
-    var col = function (n) { return head.indexOf(n); };
-    var c = { date: col('日期'), cat: col('類別'), grp: col('大類別'), amt: col('金額'), cur: col('貨幣'), mem: col('成員'), acc: col('帳戶'), tag: col('標籤'), note: col('備註'), io: col('收支區分'), id: col('UUID') };
-    var txs = [];
-    for (var i = 1; i < vals.length; i++) {
-      var r = vals[i], d = r[c.date];
-      d = d instanceof Date ? fmt_(d) : String(d).replace(/^(\d{4})(\d{2})(\d{2}).*/, '$1-$2-$3');
-      var amount = Number(String(r[c.amt]).replace(/,/g, ''));
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !amount) continue;
-      txs.push({ id: String(r[c.id] || ('legacy-' + d + '-' + i)), date: d, type: r[c.io] === '收' ? '收' : '支', category: String(r[c.cat] || '待分類'), group: String(r[c.grp] || ''),
-        amount: amount, currency: String(r[c.cur] || 'JPY'), account: String(r[c.acc] || ''), member: String(r[c.mem] || '自己'), tags: String(r[c.tag] || ''), note: String(r[c.note] || ''), source: 'import', status: 'ok' });
-    }
-    return { rows: txs.length, added: withLock_(function () { return appendTx_(txs); }) };
+  putRecs: req => { upsert_(sheet_(ss_(), 'rec'), req.recs.map(recToRow_)); return {n: req.recs.length}; },
+  delRecs: req => ({n: remove_(sheet_(ss_(), 'rec'), req.ids)}),
+  putSlip: req => { upsert_(sheet_(ss_(), 'slip'), [slipToRow_(req.slip)]); return {}; },
+  putSlips: req => { upsert_(sheet_(ss_(), 'slip'), req.slips.map(slipToRow_)); return {n: req.slips.length}; },
+  delSlip: req => ({n: remove_(sheet_(ss_(), 'slip'), [req.id])}),
+  putMeta: req => { upsert_(sheet_(ss_(), 'meta'), [['meta', JSON.stringify(req.meta)]]); return {}; },
+  saveFile: req => {
+    const P = PropertiesService.getScriptProperties(); const root = DriveApp.getFolderById(P.getProperty('FOLDER_ID'));
+    const name = String(req.folder || '其他'); const it = root.getFoldersByName(name); const folder = it.hasNext() ? it.next() : root.createFolder(name);
+    const blob = Utilities.newBlob(Utilities.base64Decode(req.base64), req.mime || 'application/octet-stream', req.name || 'file');
+    const f = folder.createFile(blob); return {id: f.getId(), url: f.getUrl()};
   }
 };
 
-/* ===================== 固定支出（每天 6 點跑） ===================== */
-
-/* 每天早上 6 點：每個帳本的固定收支、信用卡自動扣款，然後更新股價匯率 */
-function runRecurring() {
-  var n = 0;
-  [null].concat(books_()).forEach(function (b) {
-    CUR_BOOK = b; CUR_SS = null;
-    try { n += runRecurringBook_(); } catch (e) { Logger.log((b ? b.name : 'main') + ': ' + e); }
-    try { refreshPrices_(); } catch (e) { Logger.log('prices ' + e); }
-  });
-  CUR_BOOK = null; CUR_SS = null;
-  return n;
+/* ---- 試算表工具 ---- */
+function ss_() { const id = PropertiesService.getScriptProperties().getProperty('SHEET_ID'); if (!id) throw new Error('還沒執行 setup'); return SpreadsheetApp.openById(id); }
+function sheet_(ss, key) {
+  const def = SHEETS[key]; let sh = ss.getSheetByName(def.name);
+  if (!sh) { sh = ss.insertSheet(def.name); sh.getRange(1, 1, 1, def.head.length).setValues([def.head]).setFontWeight('bold'); sh.setFrozenRows(1); }
+  return sh;
 }
-function runRecurringBook_() {
-  var today = todayStr_(), p = today.split('-').map(Number), td = new Date(p[0], p[1] - 1, p[2]);
-  var last = new Date(p[0], p[1], 0).getDate();
-  var list = readObjects_('recurring').filter(function (r) { return String(r.active).toUpperCase() === 'TRUE' && Number(r.amount); });
-  var allTx = readObjects_('tx'), accs = readObjects_('accounts'), accMap = {};
-  accs.forEach(function (a) { accMap[a.name] = a; });
-  var txs = [], ym = today.slice(0, 7);
-  /* 這個月已經手動記過同類別、同金額的就不重複記 */
-  var seen = {};
-  allTx.forEach(function (t) { if (String(t.date).slice(0, 7) === ym) seen[(t.type || '支') + '|' + t.category + '|' + Number(t.amount)] = true; });
-  list.forEach(function (r) {
-    var type = r.type || '支', freq = r.freq || 'month', date, key;
-    if (freq === 'week') {
-      var wd = Number(r.day) % 7, d = new Date(td.getTime() - ((td.getDay() - wd + 7) % 7) * 86400000);
-      date = fmt_(d); key = date;
-    } else if (freq === 'year') {
-      var mo = Number(r.month) || 1, dd = Math.min(Number(r.day) || 1, new Date(p[0], mo, 0).getDate());
-      date = p[0] + '-' + ('0' + mo).slice(-2) + '-' + ('0' + dd).slice(-2); key = String(p[0]);
-      if (date > today) return;
-    } else {
-      var day = Math.min(Number(r.day) || 1, last);
-      if (p[2] < day) return;
-      date = ym + '-' + ('0' + day).slice(-2); key = ym;
-      if (type === '支' && seen['支|' + r.category + '|' + Number(r.amount)]) return;
-      if (type === '轉' && allTx.some(function (t) { return t.type === '轉' && t.toAccount === r.toAccount && String(t.date).slice(0, 7) === ym && String(t.id).indexOf('rec-' + r.id) !== 0; })) return;
-    }
-    var id = 'rec-' + r.id + '-' + key, acc = accMap[r.account] || {};
-    var cur = acc.currency || (acc.type === 'foreign' ? 'TWD' : 'JPY');
-    if (type === '轉') {
-      var to = accMap[r.toAccount] || {}, amt = Number(r.amount);
-      /* 貸款：每月還款拆成本金（轉帳）＋利息（支出） */
-      if (to.type === 'loan' && Number(to.rate)) {
-        var bal = accBalance_(to, allTx.concat(txs));
-        var interest = bal === null ? 0 : Math.round(Math.abs(Math.min(0, bal)) * Number(to.rate) / 100 / 12);
-        if (interest) { txs.push({ id: id + '-int', date: date, type: '支', category: '貸款利息', amount: interest, currency: cur, account: r.account, member: '自己', note: r.toAccount + ' 利息', source: 'recurring', status: 'ok' }); amt -= interest; }
-      }
-      txs.push({ id: id, date: date, type: '轉', category: '轉帳', amount: amt, currency: cur, account: r.account, toAccount: r.toAccount, toAmount: amt, toCurrency: to.currency || cur, member: '自己', note: r.note || r.name, source: 'recurring', status: 'ok' });
-    } else {
-      txs.push({ id: id, date: date, type: type, category: r.category, amount: Number(r.amount), currency: cur, account: r.account, member: '自己', note: r.note || r.name, source: 'recurring', status: 'ok' });
-    }
-  });
-  /* 信用卡自動扣款：繳款日當天（或之後 7 天內）還沒繳就從扣款帳戶轉帳 */
-  var ctx = { tx: allTx, accounts: accs };
-  cardBills_(ctx).forEach(function (b) {
-    var a = accMap[b.account];
-    if (String(a.autopay).toUpperCase() !== 'TRUE' || !a.payAccount || !b.dueAmount) return;
-    if (today < b.due || dayDiff_(today, b.due) > 7) return;
-    var pc = accMap[a.payAccount] || {};
-    txs.push({ id: 'autopay-' + a.name + '-' + b.due, date: b.due, type: '轉', category: '轉帳', amount: b.dueAmount, currency: 'JPY', account: a.payAccount, toAccount: a.name, toAmount: b.dueAmount, toCurrency: pc.currency || 'JPY', member: '自己', note: a.name + ' 自動扣款', source: 'autopay', status: 'ok' });
-  });
-  if (txs.some(function (t) { return t.category === '貸款利息'; }) && !readObjects_('categories').some(function (c) { return c.name === '貸款利息'; }))
-    appendObjects_('categories', [{ name: '貸款利息', group: '其他', type: '支', emoji: '🏦', order: 999, excludeBudget: 'TRUE', hidden: '' }]);
-  return withLock_(function () { return appendTx_(txs); });
+function rows_(sh) { const n = sh.getLastRow() - 1; if (n < 1) return []; return sh.getRange(2, 1, n, sh.getLastColumn()).getValues().map(r => r.map(v => v instanceof Date ? Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss') : v)); }
+/* 依第一欄的 ID 更新或新增；整張表一次寫回（幾千列也只要一兩秒） */
+function upsert_(sh, newRows) {
+  if (!newRows.length) return;
+  const cur = rows_(sh); const idx = {}; cur.forEach((r, i) => idx[String(r[0])] = i);
+  for (const r of newRows) { const i = idx[String(r[0])]; if (i == null) { idx[String(r[0])] = cur.length; cur.push(r); } else cur[i] = r; }
+  write_(sh, cur);
 }
-function accBalance_(a, txs) {
-  if (a.opening === '' || a.opening == null || !a.openingDate) return null;
-  var od = String(a.openingDate).slice(0, 10), bal = Number(a.opening) || 0;
-  txs.forEach(function (t) {
-    if (t.date <= od) return;
-    if (t.type === '轉') {
-      if (t.account === a.name) bal -= Number(t.amount) || 0;
-      if (t.toAccount === a.name) bal += Number(t.toAmount !== '' && t.toAmount != null ? t.toAmount : t.amount) || 0;
-    } else if (t.account === a.name) bal += (t.type === '收' ? 1 : -1) * (Number(t.amount) || 0);
-  });
-  return bal;
+function remove_(sh, ids) { const set = {}; ids.forEach(i => set[String(i)] = 1); const cur = rows_(sh); const keep = cur.filter(r => !set[String(r[0])]); if (keep.length !== cur.length) write_(sh, keep, cur.length); return cur.length - keep.length; }
+function write_(sh, rows, oldLen) {
+  const w = sh.getLastColumn() || rows[0]?.length || 1; const n = Math.max(oldLen || 0, sh.getLastRow() - 1);
+  if (n > 0) sh.getRange(2, 1, n, w).clearContent();
+  if (rows.length) { const width = Math.max(...rows.map(r => r.length)); sh.getRange(2, 1, rows.length, width).setValues(rows.map(r => { const a = r.slice(); while (a.length < width) a.push(''); return a; })); }
 }
-
-/* 在編輯器執行一次：授權雲端硬碟（收據、共享帳本）並建立股價匯率分頁 */
-function authorize() {
-  receiptFolder_();
-  ensureHeaders_();
-  Logger.log(JSON.stringify(refreshPrices_()));
+/* 日期、文字一律用文字格式寫入（開頭加 '），避免試算表自動轉成日期或數字 */
+const txt_ = v => "'" + String(v == null ? '' : v);
+const str_ = v => String(v == null ? '' : v).replace(/^'/, '');
+function recToRow_(r) { return [r.id, txt_(r.d), r.t ? '收' : '支', txt_(r.c), txt_(r.p), +r.a, r.cur, txt_(r.m), txt_(r.ac), txt_((r.tg || []).join('|')), txt_(r.memo), txt_(r.upd)]; }
+function recFromRow_(x) { return {id: str_(x[0]), d: str_(x[1]), t: x[2] === '收' ? 1 : 0, c: str_(x[3]), p: str_(x[4]), a: +x[5], cur: str_(x[6]) || 'JPY', m: str_(x[7]), ac: str_(x[8]), tg: str_(x[9]) ? str_(x[9]).split('|') : [], memo: str_(x[10]), upd: str_(x[11])}; }
+const SOCIAL_ = /健康保険|厚生年金|雇用保険|介護保険|子ども|子育て|子供/, ITAX_ = /所得税|年末調整/, RTAX_ = /住民税|地方税/;
+function slipToRow_(p) {
+  const o = {s: 0, i: 0, r: 0, x: 0}; Object.keys(p.deduct || {}).forEach(k => { const v = +p.deduct[k] || 0; if (SOCIAL_.test(k)) o.s += v; else if (ITAX_.test(k)) o.i += v; else if (RTAX_.test(k)) o.r += v; else o.x += v; });
+  return [p.id, p.kind, txt_(p.company), txt_(p.workMonth || p.year || ''), txt_(p.payDate || ''), +p.gross || 0, o.s, o.i, o.r, o.x, +p.deduction || 0, +p.net || 0, txt_(p.pdf || ''), JSON.stringify(p)];
 }
-
-/* ===================== 多帳本 ===================== */
-function books_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('BOOKS') || '[]'); } catch (e) { return []; } }
-function saveBooks_(list) { PropertiesService.getScriptProperties().setProperty('BOOKS', JSON.stringify(list)); }
-
-/* ===================== 股價、匯率（GOOGLEFINANCE） ===================== */
-function gfCode_(market, symbol) {
-  symbol = String(symbol).trim().toUpperCase();
-  if (market === 'US') return symbol;
-  if (market === 'JP') return 'TYO:' + symbol;
-  if (market === 'TW') return 'TPE:' + symbol;
-  return '';
-}
-function ensurePrice_(t) {
-  var rows = readObjects_('prices');
-  if (rows.some(function (r) { return r.symbol === t.symbol; })) return;
-  var gf = gfCode_(t.market, t.symbol);
-  rows.push({ symbol: t.symbol, gf: gf, price: '', currency: t.currency, manual: gf ? '' : 'TRUE', updatedAt: '' });
-  writePrices_(rows);
-}
-function writePrices_(rows) {
-  writeObjects_('prices', rows.map(function (r) {
-    var o = Object.assign({}, r);
-    o.live = r.gf && String(r.manual).toUpperCase() !== 'TRUE' ? (/^CURRENCY:/.test(r.gf) ? '=GOOGLEFINANCE("' + r.gf + '")' : '=GOOGLEFINANCE("' + r.gf + '","price")') : '';
-    return o;
-  }));
-}
-function refreshPrices_() {
-  var rows = readObjects_('prices');
-  var curs = {};
-  readObjects_('accounts').forEach(function (a) { var c = a.currency || (a.type === 'foreign' ? 'TWD' : 'JPY'); if (c !== 'JPY') curs[c] = 1; });
-  rows.forEach(function (r) { if (r.currency && r.currency !== 'JPY') curs[r.currency] = 1; });
-  Object.keys(curs).forEach(function (c) { if (!rows.some(function (r) { return r.symbol === 'FX:' + c; })) rows.push({ symbol: 'FX:' + c, gf: 'CURRENCY:' + c + 'JPY', price: '', currency: 'JPY', manual: '', updatedAt: '' }); });
-  if (!rows.length) return [];
-  writePrices_(rows);
-  SpreadsheetApp.flush();
-  for (var w = 0; w < 6; w++) { Utilities.sleep(2500); if (!readObjects_('prices').some(function (r) { return /Loading|載入|読み込み/.test(String(r.live)); })) break; }
-  var fresh = readObjects_('prices');
-  fresh.forEach(function (r) { var v = Number(r.live); if (r.live !== '' && !isNaN(v) && v > 0) { r.price = v; r.updatedAt = nowIso_(); } });
-  writePrices_(fresh);
-  var fx = fresh.filter(function (r) { return r.symbol === 'FX:TWD'; })[0];
-  if (fx && Number(fx.price)) setSetting_('twdRate', Math.round(Number(fx.price) * 1000) / 1000);
-  return fresh;
-}
-
-/* ===================== 收據 ===================== */
-function receiptFolder_() {
-  var props = PropertiesService.getScriptProperties(), id = props.getProperty('RECEIPT_FOLDER');
-  if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
-  var f = DriveApp.createFolder('Wen 記帳收據');
-  props.setProperty('RECEIPT_FOLDER', f.getId());
-  return f;
-}
-
-/* ===================== 通知文字 ===================== */
-
-function txMessage_(tx) {
-  var head = '已記帳 ¥' + fmtN_(tx.amount) + '（' + tx.category + '／' + tx.account + '）' + (tx.note ? ' ' + tx.note : '');
-  if (tx.status === 'inbox') return head + '\n→ 打開 App 的「待分類」選類別';
-  var ctx = ctx_();
-  var b = ctx.budgetOf(tx.category, tx.date);
-  if (!b) return head;
-  var pct = Math.round(b.spent / b.budget * 100);
-  var tail = '\n' + b.label + ' 本期 ¥' + fmtN_(b.spent) + ' / ¥' + fmtN_(b.budget) + '（' + pct + '%）';
-  if (pct >= 100) tail += ' ⚠️ 已超支';
-  else if (pct >= ctx.alert) tail += ' ⚠️ 快用完了';
-  return head + tail;
-}
-
-function summaryText_(period) {
-  var ctx = ctx_(), today = todayStr_();
-  var c = cycleOf_(today, ctx.startDay);
-  var spentCycle = ctx.spend(c.start, c.end), budget = ctx.monthBudgetTotal;
-  var daysLeft = dayDiff_(c.end, today) + 1;
-  var remain = budget - spentCycle;
-  var lines = [];
-  if (period === 'day') {
-    var t = ctx.spend(today, today);
-    lines.push('今天花了 ¥' + fmtN_(t));
-  } else {
-    var w0 = fmt_(new Date(new Date().getTime() - 7 * 86400000));
-    var w = ctx.txIn(w0, today);
-    lines.push('過去 7 天花了 ¥' + fmtN_(sum_(w)));
-    var byCat = {};
-    w.forEach(function (x) { byCat[x.category] = (byCat[x.category] || 0) + x.amount; });
-    var top = Object.keys(byCat).sort(function (a, b) { return byCat[b] - byCat[a]; }).slice(0, 3);
-    if (top.length) lines.push('最多：' + top.map(function (k) { return k + ' ¥' + fmtN_(byCat[k]); }).join('、'));
-  }
-  lines.push('本期（' + c.start.slice(5) + '～' + c.end.slice(5) + '）剩 ¥' + fmtN_(remain) + '，' + daysLeft + ' 天，每天可用 ¥' + fmtN_(Math.max(0, Math.floor(remain / daysLeft))));
-  var warn = ctx.overList(c);
-  if (warn.length) lines.push('⚠️ ' + warn.join('、'));
-  var inbox = ctx.tx.filter(function (x) { return x.status === 'inbox'; }).length;
-  if (inbox) lines.push('待分類 ' + inbox + ' 筆');
-  if (period === 'week') {
-    var bills = cardBills_(ctx);
-    bills.forEach(function (b) { if (b.dueAmount > 0) lines.push(b.account + ' ' + b.due.slice(5) + ' 要繳 ¥' + fmtN_(b.dueAmount)); });
-    var adv = ctx.tx.filter(function (x) { return x.member === '公司' && x.type === '支' && String(x.tags).indexOf('已退回') < 0; });
-    if (adv.length) lines.push('公司代墊未退 ¥' + fmtN_(sum_(adv)) + '（' + adv.length + ' 筆）');
-  }
-  return lines.join('\n');
-}
-
-/* 預算計算共用 */
-function ctx_() {
-  var st = settingsMap_();
-  var startDay = Number(st.cycleStartDay || 10);
-  var cats = {};
-  readObjects_('categories').forEach(function (c) { cats[c.name] = c; });
-  var budgets = readObjects_('budgets');
-  var tx = readObjects_('tx').filter(function (t) {
-    var c = cats[t.category] || {};
-    return t.type === '支' && t.currency === 'JPY' && t.member !== '公司' && String(c.excludeBudget).toUpperCase() !== 'TRUE';
-  });
-  function txIn(a, b) { return tx.filter(function (t) { return t.date >= a && t.date <= b; }); }
-  function groupOf(name) { return (cats[name] || {}).group || ''; }
-  var monthBudgets = budgets.filter(function (b) { return b.period === 'month'; });
-  return {
-    startDay: startDay, alert: Number(st.alertPercent || 80), tx: readObjects_('tx'), txIn: txIn,
-    monthBudgetTotal: monthBudgets.reduce(function (s, b) { return s + Number(b.amount); }, 0),
-    spend: function (a, b) {
-      return sum_(txIn(a, b).filter(function (t) { return groupOf(t.category) !== '旅遊' && !yearOnly_(budgets, t.category); }));
-    },
-    budgetOf: function (cat, date) {
-      var c = cycleOf_(date, startDay);
-      var b = monthBudgets.filter(function (x) { return x.category === cat; })[0];
-      if (b && Number(b.amount)) return { label: cat, budget: Number(b.amount), spent: sum_(txIn(c.start, c.end).filter(function (t) { return t.category === cat; })) };
-      var g = groupOf(cat);
-      var y = budgets.filter(function (x) { return x.period === 'year' && (x.category === cat || x.category === '#' + g); })[0];
-      if (y && Number(y.amount)) {
-        var ys = date.slice(0, 4) + '-01-01', ye = date.slice(0, 4) + '-12-31';
-        if (st.budgetStart && st.budgetStart > ys) ys = st.budgetStart;
-        var match = y.category.charAt(0) === '#' ? function (t) { return groupOf(t.category) === g; } : function (t) { return t.category === cat; };
-        return { label: (y.category.charAt(0) === '#' ? g : cat) + '（年）', budget: Number(y.amount), spent: sum_(txIn(ys, ye).filter(match)) };
-      }
-      return null;
-    },
-    overList: function (c) {
-      var out = [];
-      monthBudgets.forEach(function (b) {
-        var s = sum_(txIn(c.start, c.end).filter(function (t) { return t.category === b.category; }));
-        var pct = Math.round(s / Number(b.amount) * 100);
-        if (Number(b.amount) && pct >= Number(st.alertPercent || 80)) out.push(b.category + ' ' + pct + '%');
-      });
-      return out;
-    },
-    accounts: readObjects_('accounts')
-  };
-}
-function yearOnly_(budgets, cat) { return budgets.some(function (b) { return b.period === 'year' && b.category === cat; }); }
-
-/* 信用卡帳單：結帳日 closeDay、繳款日 payDay（隔月） */
-function cardBills_(ctx) {
-  var today = todayStr_();
-  return ctx.accounts.filter(function (a) { return a.type === 'credit' && Number(a.closeDay); }).map(function (a) {
-    var close = Number(a.closeDay), pay = Number(a.payDay || close);
-    var p = today.split('-').map(Number);
-    var lastClose = p[2] > close ? new Date(p[0], p[1] - 1, close) : new Date(p[0], p[1] - 2, close);
-    var prevClose = new Date(lastClose.getFullYear(), lastClose.getMonth() - 1, close);
-    var due = new Date(lastClose.getFullYear(), lastClose.getMonth() + 1, pay);
-    var all = ctx.tx.filter(function (t) { return t.account === a.name && t.type === '支'; });
-    var nextClose = new Date(lastClose.getFullYear(), lastClose.getMonth() + 1, close);
-    var closed = installParts_(all, fmt_(prevClose), fmt_(lastClose));
-    var open = installParts_(all, fmt_(lastClose), fmt_(nextClose));
-    var st = settingsMap_(), key = a.name + '_' + fmt_(due);
-    var amt = st['billAmt_' + key] !== undefined && st['billAmt_' + key] !== '' ? Number(st['billAmt_' + key]) : sum_(closed);
-    var dueLimit = fmt_(new Date(due.getFullYear(), due.getMonth(), due.getDate() + 7));
-    var paidTx = ctx.tx.some(function (t) { return t.type === '轉' && t.toAccount === a.name && t.date > fmt_(lastClose) && t.date <= dueLimit; });
-    return { account: a.name, due: fmt_(due), dueAmount: (st['billPaid_' + key] === '1' || paidTx) ? 0 : amt, openAmount: sum_(open) };
-  });
-}
-
-/* ===================== 小工具 ===================== */
-
-function cycleOf_(dateStr, startDay) {
-  var p = dateStr.split('-').map(Number), m = p[1] - 1;
-  if (p[2] < startDay) m -= 1;
-  return { start: fmt_(new Date(p[0], m, startDay)), end: fmt_(new Date(p[0], m + 1, startDay - 1)) };
-}
-function dayDiff_(a, b) {
-  var x = a.split('-').map(Number), y = b.split('-').map(Number);
-  return Math.round((new Date(x[0], x[1] - 1, x[2]) - new Date(y[0], y[1] - 1, y[2])) / 86400000);
-}
-/* 分期：第 k 期算在刷卡日加 k 個月的那一期，零頭放第一期 */
-function installParts_(list, from, to) {
-  var out = [];
-  list.forEach(function (t) {
-    var n = Math.max(1, Number(t.installments) || 1), amt = Number(t.amount);
-    if (n === 1) { if (t.date > from && t.date <= to) out.push(t); return; }
-    var part = Math.floor(amt / n), p = String(t.date).split('-').map(Number);
-    for (var k = 0; k < n; k++) {
-      var d = new Date(p[0], p[1] - 1 + k, Math.min(p[2], new Date(p[0], p[1] + k, 0).getDate())), ds = fmt_(d);
-      if (ds > from && ds <= to) out.push({ amount: k === 0 ? amt - part * (n - 1) : part });
-    }
-  });
-  return out;
-}
-function sum_(list) { return list.reduce(function (s, t) { return s + Number(t.amount); }, 0); }
-function fmtN_(n) { return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
-
-function matchRule_(merchant) {
-  if (!merchant) return '';
-  var m = merchant.toLowerCase(), rules = readObjects_('rules');
-  for (var i = 0; i < rules.length; i++) if (rules[i].keyword && m.indexOf(String(rules[i].keyword).toLowerCase()) >= 0) return rules[i].category;
-  return '';
-}
-function matchCard_(card) {
-  if (!card) return '';
-  var c = String(card).toLowerCase(), cards = readObjects_('cards');
-  for (var i = 0; i < cards.length; i++) if (cards[i].keyword && c.indexOf(String(cards[i].keyword).toLowerCase()) >= 0) return cards[i].account;
-  return '';
-}
-function parseAmount_(v) {
-  if (typeof v === 'number') return Math.round(Math.abs(v));
-  var s = String(v || '').replace(/[０-９]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); });
-  var m = s.replace(/,/g, '').match(/\d+(\.\d+)?/);
-  return m ? Math.round(Number(m[0])) : 0;
-}
-
-/* ===================== 試算表讀寫 ===================== */
-
-function sheet_(k) { return ss_().getSheetByName(SHEET_NAMES[k]); }
-/* 新版多了欄位時，把標題列補齊（舊資料的新欄位是空白） */
-function ensureHeaders_() {
-  Object.keys(SHEETS).forEach(function (k) {
-    var sh = sheet_(k);
-    if (!sh) { sh = ss_().insertSheet(SHEET_NAMES[k]); sh.setFrozenRows(1); if (k === 'trades') sh.getRange('B:B').setNumberFormat('@'); }
-    var n = SHEETS[k].length;
-    if (sh.getLastColumn() < n) sh.getRange(1, 1, 1, n).setValues([SHEETS[k]]).setFontWeight('bold');
-  });
-}
-/* 改名：把交易、預算、固定支出、規則等所有用到舊名稱的地方一起改 */
-function renameIn_(k, fields, from, to) {
-  var sh = sheet_(k), n = sh.getLastRow(), head = SHEETS[k], count = 0;
-  if (n <= 1) return 0;
-  fields.forEach(function (f) {
-    var j = head.indexOf(f); if (j < 0) return;
-    var rg = sh.getRange(2, j + 1, n - 1, 1), v = rg.getValues(), changed = false;
-    for (var i = 0; i < v.length; i++) if (String(v[i][0]) === from) { v[i][0] = to; changed = true; count++; }
-    if (changed) rg.setValues(v);
-  });
-  return count;
-}
-
-function readObjects_(k) {
-  var sh = sheet_(k), n = sh.getLastRow(), head = SHEETS[k];
-  if (n <= 1) return [];
-  var vals = sh.getRange(2, 1, n - 1, head.length).getValues();
-  var out = [];
-  for (var i = 0; i < vals.length; i++) {
-    if (vals[i][0] === '' || vals[i][0] === null) continue;
-    var o = {};
-    for (var j = 0; j < head.length; j++) {
-      var v = vals[i][j];
-      if (v instanceof Date) {
-        var hms = Utilities.formatDate(v, 'Asia/Tokyo', 'HH:mm:ss');
-        v = (head[j] === 'date' || head[j] === 'payDate' || head[j] === 'openingDate' || hms === '00:00:00') ? fmt_(v) : Utilities.formatDate(v, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ss");
-      }
-      o[head[j]] = v === null ? '' : v;
-    }
-    if ('amount' in o) o.amount = Number(String(o.amount).replace(/,/g, '')) || 0;
-    if ('toAmount' in o && o.toAmount !== '') o.toAmount = Number(String(o.toAmount).replace(/,/g, '')) || 0;
-    if ('openingDate' in o) o.openingDate = String(o.openingDate).slice(0, 10);
-    if ('active' in o) o.active = String(o.active).toUpperCase() === 'TRUE' ? 'TRUE' : '';
-    out.push(o);
-  }
-  return out;
-}
-
-function rowsOf_(k, rows) {
-  var head = SHEETS[k];
-  return rows.map(function (r) { return head.map(function (h) { return r[h] === undefined || r[h] === null ? '' : r[h]; }); });
-}
-function writeObjects_(k, rows) {
-  var sh = sheet_(k), head = SHEETS[k];
-  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, head.length).clearContent();
-  if (rows.length) sh.getRange(2, 1, rows.length, head.length).setValues(rowsOf_(k, rows));
-}
-function appendObjects_(k, rows) {
-  if (!rows.length) return;
-  var sh = sheet_(k);
-  sh.getRange(sh.getLastRow() + 1, 1, rows.length, SHEETS[k].length).setValues(rowsOf_(k, rows));
-}
-function appendTx_(list) {
-  var sh = sheet_('tx'), n = sh.getLastRow(), existing = {};
-  if (n > 1) sh.getRange(2, 1, n - 1, 1).getValues().forEach(function (r) { existing[r[0]] = true; });
-  var now = nowIso_(), rows = [];
-  list.forEach(function (t) {
-    if (!t) return;
-    t.id = t.id || Utilities.getUuid();
-    if (existing[t.id]) return;
-    existing[t.id] = true;
-    t.createdAt = t.createdAt || now; t.updatedAt = now; t.status = t.status || 'ok'; t.currency = t.currency || 'JPY';
-    rows.push(t);
-  });
-  appendObjects_('tx', rows);
-  return rows.length;
-}
-function findRow_(k, id) {
-  var sh = sheet_(k), n = sh.getLastRow();
-  if (n <= 1) return -1;
-  var ids = sh.getRange(2, 1, n - 1, 1).getValues();
-  for (var i = 0; i < ids.length; i++) if (String(ids[i][0]) === String(id)) return i + 2;
-  return -1;
-}
-function updateRow_(k, obj) {
-  var r = findRow_(k, obj.id);
-  if (r < 0) return 0;
-  var head = SHEETS[k], sh = sheet_(k);
-  var cur = sh.getRange(r, 1, 1, head.length).getValues()[0];
-  obj.updatedAt = nowIso_();
-  sh.getRange(r, 1, 1, head.length).setValues([head.map(function (h, j) { return obj[h] === undefined ? cur[j] : obj[h]; })]);
-  return 1;
-}
-function deleteRow_(k, id) {
-  var r = findRow_(k, id);
-  if (r < 0) return 0;
-  sheet_(k).deleteRow(r);
-  return 1;
-}
-function settingsMap_() {
-  var m = {};
-  readObjects_('settings').forEach(function (r) { m[r.key] = String(r.value); });
-  return m;
-}
-function setSetting_(key, value) {
-  var sh = sheet_('settings'), n = sh.getLastRow();
-  if (n > 1) {
-    var keys = sh.getRange(2, 1, n - 1, 1).getValues();
-    for (var i = 0; i < keys.length; i++) if (keys[i][0] === key) { sh.getRange(i + 2, 2).setValue(value); return; }
-  }
-  sh.appendRow([key, value]);
-}
-function withLock_(fn) {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try { return fn(); } finally { lock.releaseLock(); }
-}
-function todayStr_() { return fmt_(new Date()); }
-function fmt_(d) { return Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM-dd'); }
-function nowIso_() { return Utilities.formatDate(new Date(), 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ss"); }
+function slipFromRow_(x) { return JSON.parse(str_(x[13])); }
+function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }

@@ -1,24 +1,12 @@
-/* 離線快取：App 本體先用快取、背景更新；資料一律走網路（Apps Script） */
-var CACHE = 'wen-kakeibo-v6';
-var SHELL = ['./', 'index.html', 'style.css', 'lib.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
-
-self.addEventListener('install', function (e) {
-  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));
-});
-self.addEventListener('activate', function (e) {
-  e.waitUntil(caches.keys().then(function (ks) {
-    return Promise.all(ks.filter(function (k) { return k !== CACHE; }).map(function (k) { return caches.delete(k); }));
-  }).then(function () { return self.clients.claim(); }));
-});
-self.addEventListener('fetch', function (e) {
-  var url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || /script\.google(usercontent)?\.com/.test(url.host)) return;
-  var same = url.origin === self.location.origin, pdfjs = /cdnjs\.cloudflare\.com/.test(url.host);
-  if (!same && !pdfjs) return;
-  e.respondWith(caches.open(CACHE).then(function (c) {
-    return c.match(e.request).then(function (hit) {
-      var net = fetch(e.request).then(function (res) { if (res.ok) c.put(e.request, res.clone()); return res; }).catch(function () { return hit; });
-      return hit || net;
-    });
-  }));
+/* 離線快取：App 本體「先網路、失敗才用快取」，更新後重新整理就是新版；資料一律走網路（Apps Script） */
+const CACHE = 'wen-kakeibo-v7';
+const SHELL = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
+  'js/parse.js', 'js/core.js', 'js/ui.js', 'js/salary.js', 'js/records.js', 'js/data.js', 'js/main.js', 'vendor/pdf.min.js', 'vendor/pdf.worker.min.js'];
+self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
+self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));
+self.addEventListener('fetch', e => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
+  e.respondWith(fetch(e.request).then(res => { if (res.ok) { const c = res.clone(); caches.open(CACHE).then(x => x.put(e.request, c)); } return res; })
+    .catch(() => caches.match(e.request).then(hit => hit || caches.match('index.html'))));
 });
