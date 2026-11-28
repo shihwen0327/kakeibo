@@ -174,7 +174,8 @@ function checkSlip(p) { const w = []; const sp = Object.values(p.pay || {}).redu
   if (sp !== +p.gross) w.push(`支給項目合計 ${yen(sp)} ≠ 總支給 ${yen(p.gross)}`); if (sd !== +p.deduction) w.push(`扣除項目合計 ${yen(sd)} ≠ 扣除合計 ${yen(p.deduction)}`);
   if (+p.gross - +p.deduction !== +p.net) w.push(`總支給 − 扣除 = ${yen(p.gross - p.deduction)}，和實領 ${yen(p.net)} 不同`); return w; }
 const jumin = () => Object.values(S.ps).filter(p => p.kind === '住民税').sort((a, b) => a.payDate < b.payDate ? -1 : 1);
-Object.assign(W, {split, slips, gensen, jumin, checkSlip});
+const isTax = k => ITAX.test(k) || RTAX.test(k);
+Object.assign(W, {split, slips, gensen, jumin, checkSlip, isTax});
 
 /* ---- 稅金試算（所得税＝曆年；住民税＝年度 6 月〜翌年 5 月，依前一年收入） ---- */
 const NONTAX = /非課税/;

@@ -8,23 +8,29 @@ const label = p => p.kind === '賞与' ? (p.title || `${p.payDate.slice(0, 4)} �
 
 const short = c => String(c || '').replace(/（.*?）/, '').replace(/株式会社\s*/, '').trim();
 const md = d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+const MM = p => p.payDate.slice(5, 7);
+const slipName = p => p.kind === '賞与' ? (p.title || '賞与') : (label(p) || '給与');
+const OV = {net: ['實領', p => +p.net || 0], ded: ['控除', p => +p.deduction || 0], tax: ['稅金', p => { const x = W.split(p); return x.itax + x.rtax; }]};
+const opt = (v, t, cur) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(t)}</option>`;
 W.renderSalary = () => {
   const all = W.slips(); const years = [...new Set([...all.map(p => p.payDate.slice(0, 4)), ...W.gensen().map(g => String(g.year))])].sort();
   if (!U.year) U.year = years.at(-1) || String(new Date().getFullYear());
   if (!U.sub) U.sub = 'ov';
   const L = all.filter(p => p.payDate.startsWith(U.year));
-  const tot = {gross: 0, net: 0, bonus: 0, ded: 0};
-  for (const p of L) { tot.gross += +p.gross; tot.net += +p.net; tot.ded += +p.deduction || 0; if (p.kind === '賞与') tot.bonus += +p.gross; }
+  const tot = {gross: 0, bonus: 0};
+  for (const p of L) { tot.gross += +p.gross; if (p.kind === '賞与') tot.bonus += +p.gross; }
   const yi = years.indexOf(U.year);
   const cos = []; for (const p of L.slice().reverse()) if (!cos.includes(p.company)) cos.push(p.company);
   let h = `<div class="top"><span class="sp"></span><button class="cb" data-add aria-label="新增">${I.plus}</button><span class="t">薪資</span></div>`;
   if (S.offline) h += `<div class="banner">${esc(S.offline)}</div>`;
-  h += `<div class="pnav"><button class="ar" data-y="${years[yi - 1] || ''}" ${yi > 0 ? '' : 'disabled'} aria-label="前一年">‹</button><span class="lb nolb">${U.year} 年<small>（${W.reiwa(+U.year)}）</small></span><button class="ar" data-y="${years[yi + 1] || ''}" ${yi >= 0 && yi < years.length - 1 ? '' : 'disabled'} aria-label="後一年">›</button></div>
-    <div class="segc" role="tablist">${[['ov', '總覽'], ['ls', '明細'], ['tx', '稅金']].map(([k, t]) => `<button role="tab" data-sub="${k}" class="${U.sub === k ? 'on' : ''}" aria-selected="${U.sub === k}">${t}</button>`).join('')}</div>`;
+  if (U.sub !== 'ls') h += `<div class="pnav"><button class="ar" data-y="${years[yi - 1] || ''}" ${yi > 0 ? '' : 'disabled'} aria-label="前一年">‹</button><span class="lb nolb">${U.year} 年<small>（${W.reiwa(+U.year)}）</small></span><button class="ar" data-y="${years[yi + 1] || ''}" ${yi >= 0 && yi < years.length - 1 ? '' : 'disabled'} aria-label="後一年">›</button></div>`;
+  h += `<div class="segc" role="tablist">${[['ov', '總覽'], ['ls', '明細'], ['tx', '稅金']].map(([k, t]) => `<button role="tab" data-sub="${k}" class="${U.sub === k ? 'on' : ''}" aria-selected="${U.sub === k}">${t}</button>`).join('')}</div>`;
 
   if (U.sub === 'ov') {
+    const tv = k => L.reduce((s, p) => s + OV[k][1](p), 0);
     h += `<div class="card hero2"><small>${U.year} 年總支給（依支払日）</small><b class="num">¥${yen(tot.gross)}</b>
-      <div class="h2r"><div><small>實領</small><span class="green num">¥${yen(tot.net)}</span></div><div><small>控除</small><span class="num">¥${yen(tot.ded)}</span></div><div><small>薪資單</small><span class="num">${L.length} 份</span></div></div>${tot.bonus ? `<div class="note" style="margin-top:6px">其中賞与 ¥${yen(tot.bonus)}</div>` : ''}</div>`;
+      <div class="h2r">${['net', 'ded', 'tax'].map(k => `<button class="h2b${U.ov === k ? ' on' : ''}" data-ov="${k}" aria-pressed="${U.ov === k}"><small>${OV[k][0]} <i class="cv">▾</i></small><span class="num${k === 'net' ? ' green' : ''}">¥${yen(tv(k))}</span></button>`).join('')}</div>${tot.bonus ? `<div class="note" style="margin-top:6px">其中賞与 ¥${yen(tot.bonus)}</div>` : ''}${L.length && !U.ov ? `<div class="note" style="margin-top:6px">點實領／控除／稅金看每個月的金額</div>` : ''}</div>`;
+    if (U.ov && L.length) h += monthList(L);
     if (L.length) h += `<div class="card"><div class="ch"><b>每月總支給與實領</b></div><div class="fig" id="payFig"></div>${W.legend([['總支給', '#8e8e93'], ['實領', '#4cc760'], ['控除（右軸）', '#f2a33a']])}</div>`;
     if (cos.length) h += `<div class="sec">各公司</div><div class="lst">${cos.map(c => { const Q = L.filter(p => p.company === c); const g = Q.reduce((a, p) => a + +p.gross, 0), n = Q.reduce((a, p) => a + +p.net, 0);
       return `<button class="li" data-co="${esc(c)}"><span class="l"><b>${esc(short(c))}</b><small>${Q.length} 份・${md(Q[0].payDate)}〜${md(Q.at(-1).payDate)} 支払</small></span><span class="r"><b class="num">${yen(g)}</b><small class="green num">實領 ${yen(n)}</small></span><span class="chev">›</span></button>`; }).join('')}</div>`;
@@ -32,14 +38,31 @@ W.renderSalary = () => {
   }
 
   if (U.sub === 'ls') {
-    h += `<div class="segc sm">${[['list', '清單'], ['grid', '逐項表']].map(([k, t]) => `<button data-view="${k}" class="${(U.view || 'list') === k ? 'on' : ''}">${t}</button>`).join('')}</div>`;
+    const grid = U.view === 'grid';
+    if (U.co && !cos.includes(U.co)) U.co = '';
+    const LC = U.co ? L.filter(p => p.company === U.co) : L;
+    const ms = [...new Set(LC.map(MM))].sort();
+    if (U.fm && !ms.includes(U.fm)) U.fm = undefined;
+    const fm = U.fm === undefined ? (ms.at(-1) || '') : U.fm;
+    if (U.to && (!fm || U.to <= fm || !ms.includes(U.to))) U.to = '';
+    const to = U.to || '', one = grid && fm && !to;
+    const inR = p => !grid || !fm || (to ? MM(p) >= fm && MM(p) <= to : MM(p) === fm);
+    h += `<div class="segc sm">${[['list', '清單'], ['grid', '逐項表']].map(([k, t]) => `<button data-view="${k}" class="${(grid ? 'grid' : 'list') === k ? 'on' : ''}">${t}</button>`).join('')}</div>`;
+    h += `<div class="flt"><label><span>年份</span><select data-f="year">${(years.length ? years : [U.year]).slice().reverse().map(y => opt(y, `${y} 年`, U.year)).join('')}</select></label>
+      <label><span>公司</span><select data-f="co">${opt('', '全部公司', U.co || '')}${cos.map(c => opt(c, short(c), U.co)).join('')}</select></label>
+      ${grid ? `<label><span>從（支払月）</span><select data-f="fm">${opt('', '全年', fm)}${ms.map(m => opt(m, `${+m} 月`, fm)).join('')}</select></label>
+      <label><span>到</span><select data-f="to"${fm ? '' : ' disabled'}>${opt('', fm ? '（只看這個月）' : '—', to)}${ms.filter(m => fm && m > fm).map(m => opt(m, `${+m} 月`, to)).join('')}</select></label>` : ''}</div>`;
+    const R0 = LC.filter(inR);
     if (!L.length) h += `<div class="empty" style="padding:60px 16px">這一年沒有薪資單</div>`;
-    for (const co of cos) {
-      const Q = L.filter(p => p.company === co), R = Q.slice().reverse();
-      const oth = all.filter(p => p.company === co && !p.payDate.startsWith(U.year)); const oy = [...new Set(oth.map(p => p.payDate.slice(0, 4)))].sort().reverse();
-      h += `<div class="sec">${esc(short(co))}<span class="secr num">${U.year} 年 ${Q.length} 份</span></div>`;
-      if (oth.length) h += `<div class="othy">其他 ${oth.length} 份在 ${oy.map(y => `<button class="lk" data-y="${y}">${y} 年</button>`).join('、')}</div>`;
-      if ((U.view || 'list') === 'list') {
+    else if (!R0.length) h += `<div class="empty" style="padding:60px 16px">這段期間沒有薪資單</div>`;
+    else if (one) {
+      for (const p of R0.slice().reverse()) h += `<div class="sec">${esc(short(p.company))}・${esc(slipName(p))}<span class="secr num">${md(p.payDate)} 支払</span></div>${slipDetail(p)}<div class="bb"><button class="pb lnk" data-ps="${esc(p.id)}">${I.doc}<span>開啟（編輯・PDF）</span></button></div>`;
+    } else for (const co of (U.co ? [U.co] : cos)) {
+      const Q = R0.filter(p => p.company === co), R = Q.slice().reverse(); if (!Q.length) continue;
+      h += `<div class="sec">${esc(short(co))}<span class="secr num">${grid && fm ? `${+fm}〜${+to} 月` : `${U.year} 年`} ${Q.length} 份</span></div>`;
+      if (!grid) {
+        const oth = all.filter(p => p.company === co && !p.payDate.startsWith(U.year)); const oy = [...new Set(oth.map(p => p.payDate.slice(0, 4)))].sort().reverse();
+        if (oth.length) h += `<div class="othy">其他 ${oth.length} 份在 ${oy.map(y => `<button class="lk" data-y="${y}">${y} 年</button>`).join('、')}</div>`;
         h += `<div class="lst">${R.map(p => { const w = W.checkSlip(p).length;
           return `<button class="li" data-ps="${esc(p.id)}"><span class="l"><b>${p.kind === '賞与' ? '<span class="tagb">賞与</span> ' + esc(p.title || '') : esc(label(p))}${w ? ' <span class="red">⚠</span>' : ''}</b><small>${md(p.payDate)} 支払・總 <span class="num">${yen(p.gross)}</span>・扣 <span class="num">${yen(p.deduction)}</span></small></span><span class="r"><b class="green num">${yen(p.net)}</b><small>實領</small></span><span class="chev">›</span></button>`; }).join('')}</div>`;
       } else {
@@ -54,7 +77,7 @@ W.renderSalary = () => {
         h += `</tbody><tfoot><tr><td>合計</td>${PC.map(k => `<td class="n">${yen(sm(p => (p.pay || {})[k]))}</td>`).join('')}<td class="n">${yen(sm(p => p.gross))}</td>${DC.map(k => `<td class="n">${yen(sm(p => (p.deduct || {})[k]))}</td>`).join('')}<td class="n">${yen(sm(p => p.deduction))}</td><td class="n green">${yen(sm(p => p.net))}</td></tr></tfoot></table></div>`;
       }
     }
-    if (L.length && U.view === 'grid') h += `<div class="note" style="padding:8px 16px">項目照各公司薪資單；「—」表示那張沒有這個項目。表格可以左右滑動。</div>`;
+    if (grid && !one && R0.length) h += `<div class="note" style="padding:8px 16px">項目照各公司薪資單；「—」表示那張沒有這個項目。表格可以左右滑動。</div>`;
   }
 
   if (U.sub === 'tx') {
@@ -76,14 +99,50 @@ W.renderSalary = () => {
     const by = m => L.filter(p => p.payDate.slice(0, 7) === m);
     W.barChart(fig, ym.map(m => `${+m.slice(5)}`), [{name: '總支給', color: '#8e8e93', vals: ym.map(m => by(m).reduce((s, p) => s + +p.gross, 0))}, {name: '實領', color: '#4cc760', vals: ym.map(m => by(m).reduce((s, p) => s + +p.net, 0))}],
       {line: {color: '#f2a33a', vals: ym.map(m => by(m).reduce((s, p) => s + (+p.deduction || 0), 0))}}); }
-  app.querySelectorAll('[data-y]').forEach(b => b.onclick = () => { if (b.dataset.y) { U.year = b.dataset.y; W.render(); } });
+  app.querySelectorAll('[data-y]').forEach(b => b.onclick = () => { if (b.dataset.y) { U.year = b.dataset.y; U.ovOpen = null; U.fm = undefined; U.to = ''; W.render(); } });
+  app.querySelectorAll('[data-ov]').forEach(b => b.onclick = () => { U.ov = U.ov === b.dataset.ov ? null : b.dataset.ov; U.ovOpen = null; W.render(); });
+  app.querySelectorAll('[data-om]').forEach(b => b.onclick = () => { U.ovOpen = U.ovOpen === b.dataset.om ? null : b.dataset.om; W.render(); });
+  app.querySelectorAll('[data-f]').forEach(s => s.onchange = () => { const f = s.dataset.f, v = s.value;
+    if (f === 'year') { U.year = v; U.fm = undefined; U.to = ''; } else if (f === 'co') { U.co = v; U.fm = undefined; U.to = ''; } else if (f === 'fm') { U.fm = v; U.to = ''; } else U.to = v;
+    W.render(); });
   app.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { U.sub = b.dataset.sub; W.render(); window.scrollTo(0, 0); });
   app.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { U.view = b.dataset.view; W.render(); });
-  app.querySelectorAll('[data-co]').forEach(b => b.onclick = () => { U.sub = 'ls'; W.render(); });
+  app.querySelectorAll('[data-co]').forEach(b => b.onclick = () => { U.sub = 'ls'; U.co = b.dataset.co; U.fm = undefined; U.to = ''; W.render(); window.scrollTo(0, 0); });
   app.querySelectorAll('[data-ps]').forEach(r => r.onclick = () => openSlip(r.dataset.ps));
   const aj = app.querySelector('[data-addj]'); if (aj) aj.onclick = () => editJumin(null);
   app.querySelector('[data-add]').onclick = e => W.popover(e.currentTarget, [{t: '上傳薪資單 PDF', icon: I.up, f: () => upload('slip')}, {t: '上傳源泉徴収票 PDF', icon: I.up, f: () => upload('gensen')}, {t: '手動新增薪資單', icon: I.pen, f: () => editSlip(null)}, {t: '手動新增源泉徴収票', icon: I.pen, f: () => editGensen(null)}, {t: '新增住民税（自繳）', icon: I.pen, f: () => editJumin(null)}]);
 };
+
+/* 總覽：實領／控除／稅金 每月清單，點月份展開細項 */
+function monthList(L) {
+  const [name, f] = OV[U.ov]; const by = {}; for (const p of L) (by[MM(p)] = by[MM(p)] || []).push(p);
+  let h = `<div class="sec">${name}・每月（依支払日）<span class="secr num">合計 ¥${yen(L.reduce((s, p) => s + f(p), 0))}</span></div><div class="lst">`;
+  for (const m of Object.keys(by).sort()) { const Q = by[m], open = U.ovOpen === m;
+    h += `<button class="li" data-om="${m}" aria-expanded="${open}"><span class="l"><b>${+m} 月</b><small>${Q.map(p => esc(slipName(p))).join('・')}</small></span><span class="r"><b class="num${U.ov === 'net' ? ' green' : ''}">${yen(Q.reduce((s, p) => s + f(p), 0))}</b></span><span class="chev${open ? ' op' : ''}">›</span></button>`;
+    if (open) h += `<div class="mx">${Q.map(monthDetail).join('')}</div>`; }
+  h += '</div>';
+  if (U.ov === 'tax') h += `<div class="note" style="padding:0 20px 4px">稅金＝薪資單上扣的所得税（含年末調整）＋住民税（特別徴収）。<button class="lk" data-sub="tx">所得税試算・住民税 ›</button></div>`;
+  return h;
+}
+function monthDetail(p) {
+  const rows = (o, keep, cls = '') => Object.entries(o || {}).filter(([k, v]) => +v && (!keep || keep(k))).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n ${cls}">${yen(v)}</td></tr>`).join('');
+  let t;
+  if (U.ov === 'net') t = `${rows(p.pay)}<tr class="tt"><td>總支給額</td><td class="n">${yen(p.gross)}</td></tr><tr><td>控除合計</td><td class="n red">−${yen(p.deduction)}</td></tr><tr class="tt"><td>實領</td><td class="n green">${yen(p.net)}</td></tr>`;
+  else if (U.ov === 'ded') t = `${rows(p.deduct, null, 'red')}<tr class="tt"><td>控除合計</td><td class="n red">${yen(p.deduction)}</td></tr>`;
+  else t = `${rows(p.deduct, W.isTax) || '<tr><td class="sub">這份沒有扣稅</td><td></td></tr>'}<tr class="tt"><td>稅金合計</td><td class="n">${yen(OV.tax[1](p))}</td></tr>`;
+  return `<div class="mxh"><span>${esc(slipName(p))}・${esc(short(p.company))}・${md(p.payDate)} 支払</span><button class="lk" data-ps="${esc(p.id)}">完整明細 ›</button></div><table class="tbl sm">${t}</table>`;
+}
+/* 一份薪資單的細項（明細頁單月、薪資單頁共用） */
+function slipDetail(p) {
+  const w = W.checkSlip(p);
+  const tbl = (o, cls) => Object.entries(o || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n ${cls || ''}">${yen(v)}</td></tr>`).join('');
+  return `${w.length ? `<div class="banner">${w.map(esc).join('<br>')}</div>` : ''}
+    <div class="g4 c3"><div><small>總支給</small><b>${yen(p.gross)}</b></div><div><small>控除合計</small><b>${yen(p.deduction)}</b></div><div><small>實領</small><b class="green">${yen(p.net)}</b></div></div>
+    <div class="sec">支給</div><div class="card"><table class="tbl sm">${tbl(p.pay)}<tr class="tt"><td>總支給額</td><td class="n">${yen(p.gross)}</td></tr></table></div>
+    <div class="sec">控除</div><div class="card"><table class="tbl sm">${tbl(p.deduct, 'red')}<tr class="tt"><td>控除合計</td><td class="n red">${yen(p.deduction)}</td></tr></table></div>
+    ${Object.keys(p.attendance || {}).length ? `<div class="sec">勤怠</div><div class="card"><table class="tbl sm">${Object.entries(p.attendance).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${esc(v)}</td></tr>`).join('')}</table></div>` : ''}
+    ${p.note ? `<div class="note" style="padding:0 16px">${esc(p.note)}</div>` : ''}`;
+}
 
 function taxCards(y) {
   const t = W.taxYear(y); let h = '';
@@ -135,16 +194,9 @@ function openSlip(id) {
       pg.in.innerHTML = W.head(W.bx('back', I.back, '返回'), `${p.year} 年 源泉徴収票`, '<button class="pb" data-ed>編輯</button>') + `<div class="card"><div class="sub">${esc(p.company)}</div>
         <table class="tbl sm">${Object.entries(p.fields || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${yen(v)}</td></tr>`).join('')}</table>${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}</div><div class="bb">${pdfLink(p)}<button class="pb" data-del style="color:var(--red)">刪除</button></div>`;
     } else {
-      const x = W.split(p), w = W.checkSlip(p);
-      const tbl = (o, cls) => Object.entries(o || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n ${cls || ''}">${yen(v)}</td></tr>`).join('');
       pg.in.innerHTML = W.head(W.bx('back', I.back, '返回'), p.kind === '賞与' ? '賞与明細' : '薪資明細', '<button class="pb" data-ed>編輯</button>') +
         `<div class="hero" style="padding-top:4px"><small>${esc(p.company)}</small><b class="green">¥${yen(p.net)}</b><span>實領・${W.ymd(p.payDate.replace(/-/g, ''))} 支払${p.workMonth && p.kind !== '賞与' ? `・${p.workMonth.replace('-', '年')}月分` : ''}</span></div>
-        ${w.length ? `<div class="banner">${w.map(esc).join('<br>')}</div>` : ''}
-        <div class="g4 c3"><div><small>總支給</small><b>${yen(p.gross)}</b></div><div><small>控除合計</small><b>${yen(p.deduction)}</b></div><div><small>實領</small><b class="green">${yen(p.net)}</b></div></div>
-        <div class="sec">支給</div><div class="card"><table class="tbl sm">${tbl(p.pay)}<tr class="tt"><td>總支給額</td><td class="n">${yen(p.gross)}</td></tr></table></div>
-        <div class="sec">控除</div><div class="card"><table class="tbl sm">${tbl(p.deduct, 'red')}<tr class="tt"><td>控除合計</td><td class="n red">${yen(p.deduction)}</td></tr></table></div>
-        ${Object.keys(p.attendance || {}).length ? `<div class="sec">勤怠</div><div class="card"><table class="tbl sm">${Object.entries(p.attendance).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${esc(v)}</td></tr>`).join('')}</table></div>` : ''}
-        ${p.note ? `<div class="note" style="padding:0 16px">${esc(p.note)}</div>` : ''}<div class="bb">${pdfLink(p)}<button class="pb" data-del style="color:var(--red)">刪除</button></div>`;
+        ${slipDetail(p)}<div class="bb">${pdfLink(p)}<button class="pb" data-del style="color:var(--red)">刪除</button></div>`;
     }
     pg.in.querySelector('[data-back]').onclick = () => pg.close();
     pg.in.querySelector('[data-ed]').onclick = () => p.kind === '源泉徴収票' ? editGensen(p) : editSlip(p);
