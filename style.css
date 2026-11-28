@@ -329,8 +329,8 @@ textarea{resize:none}
 .hero2{padding:18px 16px 16px;text-align:center}
 .hero2>small{font-size:13px;color:var(--sub)}
 .hero2>b{display:block;font-size:34px;font-weight:700;letter-spacing:-.01em;margin:2px 0 14px}
-.h2r{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:.5px solid var(--line);padding-top:12px}
-.h2r>*+*{border-left:.5px solid var(--line)}
+.h2r{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));row-gap:6px;border-top:.5px solid var(--line);padding-top:12px}
+.h2r>:nth-child(even){border-left:.5px solid var(--line)}
 .h2r small{display:block;font-size:12px;color:var(--sub);margin-bottom:2px}.h2r span{font-size:16px;font-weight:600}
 .bigr{display:flex;justify-content:space-between;align-items:baseline;margin-top:10px;padding-top:12px;border-top:1px solid #48484a}
 .bigr span{font-weight:600}.bigr b{font-size:24px;font-weight:700}
@@ -372,4 +372,4 @@ textarea{resize:none}
   background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.6'/%3E%3C/svg%3E") no-repeat right center}
 .flt select:disabled{color:var(--sub2);opacity:.6}
 .flt select option{background:#1c1c1e;color:#fff}
-.h2r .h2b span{font-size:14px;white-space:nowrap}
+.h2r .h2b span{font-size:16px;white-space:nowrap}
