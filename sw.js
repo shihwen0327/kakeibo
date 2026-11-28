@@ -1,5 +1,5 @@
 /* 離線快取：App 本體「先網路、失敗才用快取」，更新後重新整理就是新版；資料一律走網路（Apps Script） */
-const CACHE = 'wen-kakeibo-v11';
+const CACHE = 'wen-kakeibo-v12';
 const SHELL = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
   'js/parse.js', 'js/core.js', 'js/ui.js', 'js/salary.js', 'js/records.js', 'js/data.js', 'js/main.js', 'vendor/pdf.min.js', 'vendor/pdf.worker.min.js'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
