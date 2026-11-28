@@ -355,3 +355,4 @@ textarea{resize:none}
 .othy{margin:-2px 20px 8px;font-size:13px;color:var(--sub)}.othy .lk{font-size:13px}
 .bb.col{flex-direction:column;align-items:stretch;gap:10px}.bb.col .pb{flex:none;width:100%}
 .pb.big{color:#fff}
+.tabs[hidden]{display:none}
