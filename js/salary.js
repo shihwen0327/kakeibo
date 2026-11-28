@@ -10,7 +10,7 @@ const short = c => String(c || '').replace(/（.*?）/, '').replace(/株式会�
 const md = d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
 const MM = p => p.payDate.slice(5, 7);
 const slipName = p => p.kind === '賞与' ? (p.title || '賞与') : (label(p) || '給与');
-const OV = {net: ['實領', p => +p.net || 0], ded: ['控除', p => +p.deduction || 0], tax: ['稅金', p => { const x = W.split(p); return x.itax + x.rtax; }]};
+const OV = {net: ['實領', p => +p.net || 0], ded: ['控除', p => +p.deduction || 0], soc: ['社保', p => W.split(p).social], tax: ['稅金', p => { const x = W.split(p); return x.itax + x.rtax; }]};
 const opt = (v, t, cur) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(t)}</option>`;
 W.renderSalary = () => {
   const all = W.slips(); const years = [...new Set([...all.map(p => p.payDate.slice(0, 4)), ...W.gensen().map(g => String(g.year))])].sort();
@@ -29,7 +29,7 @@ W.renderSalary = () => {
   if (U.sub === 'ov') {
     const tv = k => L.reduce((s, p) => s + OV[k][1](p), 0);
     h += `<div class="card hero2"><small>${U.year} 年總支給（依支払日）</small><b class="num">¥${yen(tot.gross)}</b>
-      <div class="h2r">${['net', 'ded', 'tax'].map(k => `<button class="h2b${U.ov === k ? ' on' : ''}" data-ov="${k}" aria-pressed="${U.ov === k}"><small>${OV[k][0]} <i class="cv">▾</i></small><span class="num${k === 'net' ? ' green' : ''}">¥${yen(tv(k))}</span></button>`).join('')}</div>${tot.bonus ? `<div class="note" style="margin-top:6px">其中賞与 ¥${yen(tot.bonus)}</div>` : ''}${L.length && !U.ov ? `<div class="note" style="margin-top:6px">點實領／控除／稅金看每個月的金額</div>` : ''}</div>`;
+      <div class="h2r">${['net', 'ded', 'soc', 'tax'].map(k => `<button class="h2b${U.ov === k ? ' on' : ''}" data-ov="${k}" aria-pressed="${U.ov === k}"><small>${OV[k][0]} <i class="cv">▾</i></small><span class="num${k === 'net' ? ' green' : ''}">¥${yen(tv(k))}</span></button>`).join('')}</div>${tot.bonus ? `<div class="note" style="margin-top:6px">其中賞与 ¥${yen(tot.bonus)}</div>` : ''}${L.length && !U.ov ? `<div class="note" style="margin-top:6px">點實領／控除／社保／稅金看每個月的金額</div>` : ''}</div>`;
     if (U.ov && L.length) h += monthList(L);
     if (L.length) h += `<div class="card"><div class="ch"><b>每月總支給與實領</b></div><div class="fig" id="payFig"></div>${W.legend([['總支給', '#8e8e93'], ['實領', '#4cc760'], ['控除（右軸）', '#f2a33a']])}</div>`;
     if (cos.length) h += `<div class="sec">各公司</div><div class="lst">${cos.map(c => { const Q = L.filter(p => p.company === c); const g = Q.reduce((a, p) => a + +p.gross, 0), n = Q.reduce((a, p) => a + +p.net, 0);
@@ -121,6 +121,7 @@ function monthList(L) {
     h += `<button class="li" data-om="${m}" aria-expanded="${open}"><span class="l"><b>${+m} 月</b><small>${Q.map(p => esc(slipName(p))).join('・')}</small></span><span class="r"><b class="num${U.ov === 'net' ? ' green' : ''}">${yen(Q.reduce((s, p) => s + f(p), 0))}</b></span><span class="chev${open ? ' op' : ''}">›</span></button>`;
     if (open) h += `<div class="mx">${Q.map(monthDetail).join('')}</div>`; }
   h += '</div>';
+  if (U.ov === 'soc') h += `<div class="note" style="padding:0 20px 4px">社保＝健康保険（含介護保険）、厚生年金、雇用保険等社会保険料。</div>`;
   if (U.ov === 'tax') h += `<div class="note" style="padding:0 20px 4px">稅金＝薪資單上扣的所得税（含年末調整）＋住民税（特別徴収）。<button class="lk" data-sub="tx">所得税試算・住民税 ›</button></div>`;
   return h;
 }
@@ -129,6 +130,7 @@ function monthDetail(p) {
   let t;
   if (U.ov === 'net') t = `${rows(p.pay)}<tr class="tt"><td>總支給額</td><td class="n">${yen(p.gross)}</td></tr><tr><td>控除合計</td><td class="n red">−${yen(p.deduction)}</td></tr><tr class="tt"><td>實領</td><td class="n green">${yen(p.net)}</td></tr>`;
   else if (U.ov === 'ded') t = `${rows(p.deduct, null, 'red')}<tr class="tt"><td>控除合計</td><td class="n red">${yen(p.deduction)}</td></tr>`;
+  else if (U.ov === 'soc') t = `${rows(p.deduct, W.isSocial) || '<tr><td class="sub">這份沒有扣社保</td><td></td></tr>'}<tr class="tt"><td>社保合計</td><td class="n">${yen(OV.soc[1](p))}</td></tr>`;
   else t = `${rows(p.deduct, W.isTax) || '<tr><td class="sub">這份沒有扣稅</td><td></td></tr>'}<tr class="tt"><td>稅金合計</td><td class="n">${yen(OV.tax[1](p))}</td></tr>`;
   return `<div class="mxh"><span>${esc(slipName(p))}・${esc(short(p.company))}・${md(p.payDate)} 支払</span><button class="lk" data-ps="${esc(p.id)}">完整明細 ›</button></div><table class="tbl sm">${t}</table>`;
 }
