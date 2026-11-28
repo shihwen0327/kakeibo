@@ -173,6 +173,7 @@ const gensen = () => Object.values(S.ps).filter(p => p.kind === '源泉徴収票
 function checkSlip(p) { const w = []; const sp = Object.values(p.pay || {}).reduce((s, v) => s + (+v || 0), 0), sd = Object.values(p.deduct || {}).reduce((s, v) => s + (+v || 0), 0);
   if (sp !== +p.gross) w.push(`支給項目合計 ${yen(sp)} ≠ 總支給 ${yen(p.gross)}`); if (sd !== +p.deduction) w.push(`扣除項目合計 ${yen(sd)} ≠ 扣除合計 ${yen(p.deduction)}`);
   if (+p.gross - +p.deduction !== +p.net) w.push(`總支給 − 扣除 = ${yen(p.gross - p.deduction)}，和實領 ${yen(p.net)} 不同`); return w; }
+const SELFSOC = W.SELFSOC = ['国民年金', '国民健康保険'];
 const jumin = () => Object.values(S.ps).filter(p => p.kind === '住民税').sort((a, b) => a.payDate < b.payDate ? -1 : 1);
 const isTax = k => ITAX.test(k) || RTAX.test(k), isSocial = k => SOCIAL.test(k), isHP = k => /健康保険|厚生年金/.test(k);
 Object.assign(W, {split, slips, gensen, jumin, checkSlip, isTax, isSocial, isHP});
@@ -209,6 +210,9 @@ W.taxYear = (y, opt = {}) => {
       if (k > 0) { const x = split(last); const gi = +last.gross - Object.entries(last.pay || {}).filter(([kk]) => NONTAX.test(kk)).reduce((a, [, v]) => a + (+v || 0), 0);
         r.inc += gi * k; r.soc += x.social * k; r.wh += x.itax * k; r.est = k; est += k; } }
     rows.push(r); }
+  // 自繳的国民年金・国民健康保険：依繳納日算進當年的社会保険料控除
+  const self = Object.values(S.ps).filter(p => SELFSOC.includes(p.kind) && +p.payDate.slice(0, 4) === y).reduce((a, p) => a + (+p.amount || 0), 0);
+  if (self) rows.push({src: '自繳', company: '国民年金・国民健康保険', inc: 0, soc: self, wh: 0});
   for (const r of rows) { inc += r.inc; soc += r.soc; wh += r.wh; }
   const kyu = kyuyoShotoku(inc, y), kiso = kisoShotoku(y, kyu);
   const taxable = Math.max(0, Math.floor((kyu - soc - kiso) / 1000) * 1000);
