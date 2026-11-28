@@ -373,3 +373,5 @@ textarea{resize:none}
 .flt select:disabled{color:var(--sub2);opacity:.6}
 .flt select option{background:#1c1c1e;color:#fff}
 .h2r .h2b span{font-size:16px;white-space:nowrap}
+.tagb.tagu{background:#3a1f1f;color:#ff9f9a}
+.fr.isauto .k::after{content:"自動";font-size:11px;color:var(--sub);background:#2c2c2e;border-radius:6px;padding:1px 6px;margin-left:6px}

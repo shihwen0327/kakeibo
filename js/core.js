@@ -168,7 +168,7 @@ Object.assign(W, {parseCsv, csvToRecords, planImport, applyImport, findRec});
 /* ---- 薪資 ---- */
 const SOCIAL = /健康保険|厚生年金|雇用保険|介護保険|子ども|子育て|子供/, ITAX = /所得税|年末調整/, RTAX = /住民税|地方税/;
 function split(p) { const o = {social: 0, itax: 0, rtax: 0, other: 0}; for (const [k, v] of Object.entries(p.deduct || {})) { const n = +v || 0; if (SOCIAL.test(k)) o.social += n; else if (ITAX.test(k)) o.itax += n; else if (RTAX.test(k)) o.rtax += n; else o.other += n; } return o; }
-const slips = () => Object.values(S.ps).filter(p => p.kind === '給与' || p.kind === '賞与').sort((a, b) => a.payDate < b.payDate ? -1 : 1);
+const slips = () => Object.values(S.ps).filter(p => p.kind === '給与' || p.kind === '賞与' || p.kind === '未払い賃金').sort((a, b) => a.payDate < b.payDate ? -1 : 1);
 const gensen = () => Object.values(S.ps).filter(p => p.kind === '源泉徴収票');
 function checkSlip(p) { const w = []; const sp = Object.values(p.pay || {}).reduce((s, v) => s + (+v || 0), 0), sd = Object.values(p.deduct || {}).reduce((s, v) => s + (+v || 0), 0);
   if (sp !== +p.gross) w.push(`支給項目合計 ${yen(sp)} ≠ 總支給 ${yen(p.gross)}`); if (sd !== +p.deduction) w.push(`扣除項目合計 ${yen(sd)} ≠ 扣除合計 ${yen(p.deduction)}`);
@@ -196,7 +196,9 @@ function kisoShotoku(y, g) {   // 所得税的基礎控除（國稅廳：令和7
 function incomeTax(t) { const B = [[1950000, .05, 0], [3300000, .1, 97500], [6950000, .2, 427500], [9000000, .23, 636000], [18000000, .33, 1536000], [40000000, .4, 2796000], [1e15, .45, 4796000]]; const [, r, d] = B.find(b => t <= b[0]); return Math.max(0, t * r - d); }
 // 一年的所得税試算：有源泉徴収票的公司用源泉徴収票，其餘用薪資單；當年還沒發完的月份用最後一張薪資單推估
 W.taxYear = (y, opt = {}) => {
-  y = +y; const L = slips().filter(p => +p.payDate.slice(0, 4) === y), G = gensen().filter(g => +g.year === y);
+  y = +y; const G = gensen().filter(g => +g.year === y);
+  // 未払い賃金：該公司當年已有源泉徴収票（含另計）就已算在票上，不再重複算
+  const L = slips().filter(p => +p.payDate.slice(0, 4) === y && !(p.kind === '未払い賃金' && G.some(g => g.company === p.company)));
   const rows = []; let inc = 0, soc = 0, wh = 0, est = 0;
   const gcos = new Set(G.filter(g => !g.sep).map(g => g.company));
   for (const g of G) { const f = g.fields || {}; const r = {src: g.sep ? '源泉徴収票（另計）' : '源泉徴収票', company: g.company, inc: +f['支払金額'] || 0, soc: +f['社会保険料等の金額'] || 0, wh: +f['源泉徴収税額'] || 0}; rows.push(r); }
